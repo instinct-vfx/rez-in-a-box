@@ -1,0 +1,4 @@
+.rezbox/
+__pycache__/
+*.pyc
+.venv/

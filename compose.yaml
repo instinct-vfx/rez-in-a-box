@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# rez-in-a-box services. Normally driven by `rezbox up`, which selects the
+# broker profile (rabbitmq | lavinmq) via COMPOSE_PROFILES.
+#
+# Inside the compose network the broker is always reachable as `amqp:5672`
+# and memcached as `memcached:11211`, regardless of which broker runs.
+# Host ports are bound to 127.0.0.1 only.
+
+name: rezbox
+
+x-broker-common: &broker-common
+  restart: unless-stopped
+  ports:
+    - "127.0.0.1:${REZBOX_AMQP_PORT:-5672}:5672"
+    - "127.0.0.1:${REZBOX_AMQP_UI_PORT:-15672}:15672"
+  networks:
+    default:
+      aliases: [amqp]
+
+services:
+  rabbitmq:
+    <<: *broker-common
+    profiles: [rabbitmq]
+    image: rabbitmq:${REZBOX_RABBITMQ_TAG:-4.4-management-alpine}
+    hostname: rabbitmq  # stable node name, so the data volume survives restarts
+    environment:
+      RABBITMQ_DEFAULT_USER: ${REZBOX_AMQP_ADMIN_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${REZBOX_AMQP_ADMIN_PASSWORD:-admin}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  lavinmq:
+    <<: *broker-common
+    profiles: [lavinmq]
+    image: cloudamqp/lavinmq:${REZBOX_LAVINMQ_TAG:-2.11}
+    hostname: lavinmq
+    environment:
+      LAVINMQ_DEFAULT_USER: ${REZBOX_AMQP_ADMIN_USER:-admin}
+      # LavinMQ wants a RabbitMQ-style SHA-256 hash, not plaintext. rezbox.py
+      # computes it from REZBOX_AMQP_ADMIN_PASSWORD; the default is "admin".
+      LAVINMQ_DEFAULT_PASSWORD: ${REZBOX_LAVINMQ_PASSWORD_HASH:-Q7p/smLtFa99etpyupxRGll7jMsxM+okng+fpQBxKdVgwfH+}
+    volumes:
+      - lavinmq-data:/var/lib/lavinmq
+
+  memcached:
+    image: memcached:${REZBOX_MEMCACHED_TAG:-1.6-alpine}
+    restart: unless-stopped
+    # -I: rez resolves and package files can exceed the 1MB default item size
+    command: ["memcached", "-m", "${REZBOX_MEMCACHED_MB:-256}", "-I", "8m"]
+    ports:
+      - "127.0.0.1:${REZBOX_MEMCACHED_PORT:-11211}:11211"
+    healthcheck:
+      test: ["CMD-SHELL", "echo stats | nc -w 1 127.0.0.1 11211 | grep -q uptime"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  memcache-ui:
+    build:
+      context: .
+      dockerfile: services/memcache-ui/Dockerfile
+    image: rezbox/memcache-ui:dev
+    restart: unless-stopped
+    environment:
+      REZBOX_MEMCACHED: memcached:11211
+    ports:
+      - "127.0.0.1:${REZBOX_CACHE_UI_PORT:-8080}:8080"
+    depends_on:
+      memcached:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rabbitmq-data:
+  lavinmq-data:

@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rez memcache</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d232b; --muted: #667080; --line: #dde1e7;
+  --accent: #2f6fdb; --danger: #c0392b; --ok: #1f8a4c; --warn: #b7791f;
+  --resolve: #2f6fdb; --listdir: #1f8a4c; --package_file: #8e44ad; --other: #7f8c8d;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --panel: #1c2027; --text: #e3e7ee; --muted: #8b95a5; --line: #2c323c;
+    --accent: #6ea0ff; --danger: #ff6b5b; --ok: #4cc38a; --warn: #f0b44c;
+    --resolve: #6ea0ff; --listdir: #4cc38a; --package_file: #c792ea; --other: #95a5a6;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+         border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+header .server { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+header .spacer { flex: 1; }
+main { padding: 16px 20px; max-width: 1500px; margin: 0 auto; }
+button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+         padding: 5px 12px; border-radius: 6px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.danger { color: var(--danger); }
+button.danger:hover { border-color: var(--danger); }
+label.toggle { color: var(--muted); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.tile .k { color: var(--muted); font-size: 12px; }
+.tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .s { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--accent); width: 0; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin: 18px 0 10px; flex-wrap: wrap; }
+.toolbar input[type=search] { flex: 1; min-width: 200px; font: inherit; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+.chip { border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+.chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.kind { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 4px; color: #fff;
+        font-weight: 600; white-space: nowrap; }
+.kind.resolve { background: var(--resolve); } .kind.listdir { background: var(--listdir); }
+.kind.package_file { background: var(--package_file); } .kind.other { background: var(--other); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.layout.detail-open { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+@media (max-width: 1000px) { .layout.detail-open { grid-template-columns: minmax(0, 1fr); } }
+.tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: auto;
+             max-height: calc(100vh - 290px); min-height: 200px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 500;
+     cursor: pointer; user-select: none; z-index: 1; }
+th.sorted::after { content: " \25BE"; } th.sorted.asc::after { content: " \25B4"; }
+td.label { white-space: normal; word-break: break-all; font-family: var(--mono); font-size: 12px; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.row { cursor: pointer; } tr.row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+tr.row.sel { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.muted { color: var(--muted); }
+.detail { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px;
+          overflow: auto; max-height: calc(100vh - 290px); }
+.detail h2 { font-size: 14px; margin: 0 0 8px; display: flex; gap: 8px; align-items: center; }
+.detail dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0 0 12px; font-size: 13px; }
+.detail dt { color: var(--muted); } .detail dd { margin: 0; word-break: break-all; font-family: var(--mono); font-size: 12px; }
+.detail h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 0 6px; }
+pre { font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--line);
+      border-radius: 6px; padding: 10px; margin: 0; overflow: auto; max-height: 50vh; }
+ul.pk { margin: 0; padding-left: 18px; font-family: var(--mono); font-size: 12px; }
+.error { color: var(--danger); padding: 8px 0; }
+.empty { padding: 30px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>rez memcache</h1>
+  <span class="server" id="server"></span>
+  <span class="spacer"></span>
+  <label class="toggle"><input type="checkbox" id="auto" checked> auto refresh</label>
+  <button id="refresh">Refresh</button>
+  <button id="resetStats" title="memcached 'stats reset'">Reset stats</button>
+  <button id="flush" class="danger" title="flush_all: drops every entry">Flush all</button>
+</header>
+<main>
+  <div class="error" id="err" hidden></div>
+  <section class="tiles" id="tiles"></section>
+
+  <div class="toolbar">
+    <input type="search" id="filter" placeholder="Filter by label, request, path or key…">
+    <span id="chips"></span>
+    <span class="muted" id="count"></span>
+  </div>
+
+  <div class="layout" id="layout">
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th data-col="kind">Kind</th>
+          <th data-col="label">Entry</th>
+          <th data-col="size" class="num">Size</th>
+          <th data-col="last_access" class="num">Last access</th>
+          <th data-col="expires_in" class="num">Expires</th>
+          <th data-col="fetched">Read</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <aside class="detail" id="detail" hidden></aside>
+  </div>
+</main>
+
+<script>
+"use strict";
+const KINDS = ["resolve", "listdir", "package_file", "other"];
+const KIND_LABEL = { resolve: "resolve", listdir: "listdir", package_file: "package file", other: "other" };
+const state = {
+  entries: [], counts: {}, kinds: new Set(KINDS), filter: "",
+  sort: { col: "last_access", asc: false }, selected: null, prevStats: null, truncated: false,
+};
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs = {}, ...children) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const c of children.flat()) if (c != null) n.append(c instanceof Node ? c : String(c));
+  return n;
+}
+function fmtBytes(n) {
+  if (n == null) return "–";
+  const u = ["B", "KB", "MB", "GB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + u[i];
+}
+function fmtNum(n) { return n == null ? "–" : Number(n).toLocaleString(); }
+function fmtAgo(ts) {
+  if (!ts) return "–";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return s + "s ago"; if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago"; return Math.round(s / 86400) + "d ago";
+}
+function fmtDur(s) {
+  if (s == null) return "never";
+  if (s < 60) return s + "s"; if (s < 3600) return Math.round(s / 60) + "m";
+  if (s < 86400) return (s / 3600).toFixed(1) + "h"; return (s / 86400).toFixed(1) + "d";
+}
+function showError(msg) { const e = $("err"); e.hidden = !msg; e.textContent = msg || ""; }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || r.statusText);
+  return body;
+}
+const post = (path, body = {}) => api(path, {
+  method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+function tile(k, v, s, frac) {
+  return el("div", { class: "tile" }, el("div", { class: "k" }, k), el("div", { class: "v" }, v),
+    s ? el("div", { class: "s" }, s) : null,
+    frac != null ? el("div", { class: "bar" }, el("div", { style: `width:${Math.min(100, frac * 100)}%` })) : null);
+}
+
+function renderStats(st) {
+  $("server").textContent = `${st.server} · memcached ${st.version} · up ${fmtDur(st.uptime)}`;
+  let rates = "";
+  const p = state.prevStats;
+  if (p && st.time > p.time) {
+    const dt = st.time - p.time;
+    rates = `${((st.cmd_get - p.cmd_get) / dt).toFixed(1)} gets/s · ${((st.cmd_set - p.cmd_set) / dt).toFixed(1)} sets/s`;
+  }
+  state.prevStats = st;
+  const ratio = st.hit_ratio;
+  $("tiles").replaceChildren(
+    tile("Hit ratio", ratio == null ? "–" : (ratio * 100).toFixed(1) + "%",
+         `${fmtNum(st.get_hits)} hits · ${fmtNum(st.get_misses)} misses`, ratio),
+    tile("Items", fmtNum(st.curr_items), `${fmtNum(st.total_items)} stored since start`),
+    tile("Memory", fmtBytes(st.bytes), `of ${fmtBytes(st.limit_maxbytes)}`, st.bytes / st.limit_maxbytes),
+    tile("Gets / Sets", `${fmtNum(st.cmd_get)} / ${fmtNum(st.cmd_set)}`, rates),
+    tile("Evictions", fmtNum(st.evictions), `${fmtNum(st.get_expired)} expired gets`),
+    tile("Connections", fmtNum(st.curr_connections), `${fmtBytes(st.bytes_read)} in · ${fmtBytes(st.bytes_written)} out`),
+  );
+}
+
+function renderChips() {
+  $("chips").replaceChildren(...KINDS.map(k => el("button", {
+    class: "chip" + (state.kinds.has(k) ? " on" : ""),
+    onclick: () => { state.kinds.has(k) ? state.kinds.delete(k) : state.kinds.add(k); renderChips(); renderRows(); },
+  }, `${KIND_LABEL[k]} ${state.counts[k] ?? 0}`)));
+}
+
+function visibleEntries() {
+  const f = state.filter.toLowerCase();
+  const { col, asc } = state.sort;
+  return state.entries
+    .filter(e => state.kinds.has(e.kind))
+    .filter(e => !f || (e.label || "").toLowerCase().includes(f) || e.key.toLowerCase().includes(f))
+    .sort((a, b) => {
+      let x = a[col], y = b[col];
+      if (col === "expires_in") { x = x ?? Infinity; y = y ?? Infinity; }
+      if (x === y) return 0;
+      const r = x > y ? 1 : -1;
+      return asc ? r : -r;
+    });
+}
+
+function renderRows() {
+  const rows = visibleEntries();
+  document.querySelectorAll("th").forEach(th => {
+    th.classList.toggle("sorted", th.dataset.col === state.sort.col);
+    th.classList.toggle("asc", th.dataset.col === state.sort.col && state.sort.asc);
+  });
+  $("count").textContent = `${rows.length} of ${state.entries.length} entries` +
+    (state.truncated ? " (listing truncated)" : "");
+  const body = $("rows");
+  if (!rows.length) {
+    body.replaceChildren(el("tr", {}, el("td", { colspan: 6, class: "empty" },
+      state.entries.length ? "No entries match the filter." :
+      "Cache is empty. Run a rez command with memcached enabled, e.g. rez-env <pkg>.")));
+    return;
+  }
+  body.replaceChildren(...rows.slice(0, 2000).map(e => el("tr", {
+      class: "row" + (e.key === state.selected ? " sel" : ""), onclick: () => select(e.key) },
+    el("td", {}, el("span", { class: "kind " + e.kind }, KIND_LABEL[e.kind] || e.kind)),
+    el("td", { class: "label", title: e.key }, e.label || e.key,
+       e.decode_error ? el("span", { class: "muted" }, ` (${e.decode_error})`) : null),
+    el("td", { class: "num" }, fmtBytes(e.size)),
+    el("td", { class: "num" }, fmtAgo(e.last_access)),
+    el("td", { class: "num" }, fmtDur(e.expires_in)),
+    el("td", {}, e.fetched ? "yes" : el("span", { class: "muted" }, "no")),
+  )));
+}
+
+function dl(pairs) {
+  return el("dl", {}, ...pairs.filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, typeof v === "object" ? JSON.stringify(v) : String(v))]));
+}
+
+async function select(key) {
+  state.selected = key;
+  renderRows();
+  const d = $("detail");
+  d.hidden = false; $("layout").classList.add("detail-open");
+  d.replaceChildren(el("div", { class: "muted" }, "Loading…"));
+  let e;
+  try { e = await api("/api/entry?key=" + encodeURIComponent(key)); }
+  catch (err) { d.replaceChildren(el("div", { class: "error" }, err.message), closeBtn()); return; }
+  const s = e.summary || {};
+  const parts = [
+    el("h2", {}, el("span", { class: "kind " + e.kind }, KIND_LABEL[e.kind] || e.kind),
+       el("span", { class: "spacer", style: "flex:1" }), closeBtn(),
+       el("button", { class: "danger", onclick: () => del(key) }, "Delete")),
+    dl([
+      ["label", s.label], ["status", s.status], ["failure", s.failure],
+      ["solve / load time", s.solve_time != null ? `${s.solve_time}s / ${s.load_time}s` : null],
+      ["package", s.package], ["path", s.path],
+      ["format", s.format], ["entries", s.entries], ["timestamped", s.timestamped],
+      ["timestamp", s.timestamp], ["building", s.building], ["testing", s.testing],
+      ["memcached key", e.key], ["size", fmtBytes(e.size) + (e.compressed ? " (zlib)" : "")],
+      ["flush tag", e.rez_key?.flush_tag || "(none)"],
+      ["rez cache iface", e.rez_key ? `v${e.rez_key.interface_version}, python-memcached ${e.rez_key.client_version}` : null],
+      ["decode error", e.decode_error], ["summary error", s.summary_error],
+    ]),
+  ];
+  if (s.resolved?.length) parts.push(el("h3", {}, `Resolved (${s.resolved.length})`),
+    el("ul", { class: "pk" }, ...s.resolved.map(r => el("li", {}, r))));
+  if (s.repositories?.length) parts.push(el("h3", {}, "Package paths"),
+    el("ul", { class: "pk" }, ...s.repositories.map(r => el("li", {}, typeof r === "string" ? r : JSON.stringify(r)))));
+  if (e.rez_key) parts.push(el("h3", {}, "rez key"), el("pre", {}, JSON.stringify(e.rez_key.key, null, 2)));
+  parts.push(el("h3", {}, "Payload"), el("pre", {}, JSON.stringify(e.payload, null, 2)));
+  d.replaceChildren(...parts);
+}
+
+function closeBtn() {
+  return el("button", { onclick: () => {
+    state.selected = null; $("detail").hidden = true; $("layout").classList.remove("detail-open"); renderRows();
+  } }, "Close");
+}
+
+async function del(key) {
+  try { await post("/api/delete", { key }); } catch (err) { showError(err.message); return; }
+  state.selected = null; $("detail").hidden = true; $("layout").classList.remove("detail-open");
+  refresh();
+}
+
+let busy = false;
+async function refresh() {
+  if (busy) return; busy = true;
+  try {
+    const [st, en] = await Promise.all([api("/api/stats"), api("/api/entries")]);
+    showError(null);
+    renderStats(st);
+    state.entries = en.entries; state.counts = en.counts; state.truncated = en.truncated;
+    renderChips(); renderRows();
+  } catch (err) { showError("Cannot reach memcached: " + err.message); }
+  finally { busy = false; }
+}
+
+document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
+  const col = th.dataset.col;
+  state.sort = { col, asc: state.sort.col === col ? !state.sort.asc : col === "label" || col === "kind" };
+  renderRows();
+}));
+$("filter").addEventListener("input", (ev) => { state.filter = ev.target.value; renderRows(); });
+$("refresh").addEventListener("click", refresh);
+$("resetStats").addEventListener("click", async () => {
+  try { await post("/api/reset-stats"); state.prevStats = null; refresh(); } catch (err) { showError(err.message); }
+});
+$("flush").addEventListener("click", async () => {
+  if (!confirm("Flush ALL memcached entries? Every rez client sharing this memcached is affected.")) return;
+  try { await post("/api/flush"); refresh(); } catch (err) { showError(err.message); }
+});
+setInterval(() => { if ($("auto").checked && !document.hidden) refresh(); }, 3000);
+refresh();
+</script>
+</body>
+</html>

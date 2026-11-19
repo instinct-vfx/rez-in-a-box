@@ -1,0 +1,5 @@
+# Allow-list: images only need the support package and service sources.
+*
+!rezbox/
+!services/
+**/__pycache__
