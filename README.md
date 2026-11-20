@@ -9,9 +9,8 @@ releases, together with the services rez integrates with:
 - **memcached** for resolve, listdir and package file caching, with a
   **rez-aware memcache inspector** (web UI and CLI)
 
-> Status: phases 1-2 (services, broker provisioning, inspector, rez installs).
-> `rezconfig.py`, smoke tests and rez containers come next, see
-> [docs/PLAN.md](docs/PLAN.md).
+> Status: phases 1-3 (services, inspector, rez installs, rezconfig, smoke
+> test, events). Linux rez containers come next, see [docs/PLAN.md](docs/PLAN.md).
 
 ## Requirements
 
@@ -23,7 +22,8 @@ releases, together with the services rez integrates with:
 ```sh
 ./rezbox.sh up              # start services   (Windows: .\rezbox.ps1 up)
 ./rezbox.sh install-rez     # latest signed GitHub release, Python 3.11
-./rezbox.sh shell           # shell with rez on PATH
+./rezbox.sh test            # end-to-end check of rez against the services
+./rezbox.sh shell           # shell with rez on PATH, configured for the box
 ```
 
 This starts the services, waits until they are healthy, provisions the broker
@@ -58,6 +58,69 @@ broker is reachable as `amqp:5672` and memcached as `memcached:11211`.
 | `shell [--rez LABEL] [-e K=V]` | interactive shell with rez on PATH |
 | `run [--rez LABEL] [-e K=V] -- <cmd>` | run one command with rez on PATH |
 | `env [--shell sh\|powershell]` | print the environment: `eval "$(./rezbox.sh env)"` or `.\rezbox.ps1 env \| Out-String \| iex` |
+| `test [--rez LABEL\|--all] [--keep] [-v]` | end-to-end smoke test, see below |
+| `events [all\|context\|release] [--history [N]] [--json]` | follow context tracking / release messages live, or show queued ones |
+
+## rez configuration
+
+[config/rezconfig.py](config/rezconfig.py) is applied by `shell`, `run`, `env`
+and `test` (through `REZ_CONFIG_FILE`). It reads `REZBOX_*` environment
+variables, so the same file works on the host and in containers. It sets up:
+
+- **memcached** (`memcached_uri`) for resolves, directory listings and package files
+- **context tracking** to exchange `rez`, routing key `REZ.CONTEXT.<ACTION>`,
+  with extra fields `rezbox_target`, `rezbox_platform`, `rezbox_install`
+  (and `rezbox_run` during tests)
+- the **amqp release hook** (`REZ.PACKAGE.RELEASED`) and git releases without
+  an upstream (`allow_no_upstream`)
+- **payload caching** into `.rezbox/package_cache/<platform>`, with
+  `package_cache_same_device = True` (everything is on one disk, and without
+  it rez skips caching) and `package_cache_local = True` (local packages are
+  cached too)
+- repositories `.rezbox/repos/local` and `.rezbox/repos/release`
+
+| Toggle (1/0) | Default | Effect |
+|---|---|---|
+| `REZBOX_MEMCACHE` | 1 | memcached caching |
+| `REZBOX_CONTEXT_TRACKING` | 1 | context tracking messages |
+| `REZBOX_RELEASE_HOOK` | 1 | release messages |
+| `REZBOX_PACKAGE_CACHE` | 1 | payload caching |
+| `REZBOX_CACHE_LOCAL` | 1 | payload-cache local packages too |
+| `REZBOX_CACHE_ASYNC` | 1 | cache payloads in the background |
+| `REZBOX_DEFAULT_CACHABLE` | 0 | treat packages without `cachable` as cachable |
+
+Paths: `REZBOX_LOCAL_PACKAGES`, `REZBOX_RELEASE_PACKAGES`,
+`REZBOX_PACKAGE_CACHE_PATH`. For example, `./rezbox.sh shell -e REZBOX_CACHE_LOCAL=0`.
+
+`package_cache_local` only governs *adding* local packages to the cache.
+Payloads that are already cached are used whatever the setting.
+
+## Sample packages and smoke test
+
+[packages/](packages/) holds two small cachable packages with a custom
+(`build.py`) build: `rezbox_hello` (a Python module) and `rezbox_data` (a 4 MB
+payload, requires `rezbox_hello-1`).
+
+`rezbox test` releases and builds them in an isolated workdir
+(`.rezbox/test/<run>`: its own repos and package cache, listening on a
+temporary tap queue), so it does not touch your repos, caches or queues:
+
+| Check | What it proves |
+|---|---|
+| config | rezconfig.py is in effect |
+| release | `rez-release` from a git work copy works |
+| release-hook | the amqp release hook message arrives |
+| resolve | first resolve succeeds and is not from memcached |
+| resolve-cached | the identical resolve comes from memcached (`get_hits` grows) |
+| tracking | context tracking messages arrive, with the right `from_cache` flags |
+| payload-cache | the resolved environment points into the package cache |
+| invalidation | releasing 1.1.0 invalidates the cached resolve |
+| local-cache | a local package (`rez-build -i`) is payload-cached |
+| local-no-cache | control: with `REZBOX_CACHE_LOCAL=0` it is not |
+
+`--all` runs the test for every rez install on this platform. That's useful for
+comparing a new release against the previous one. Logs and a `report.json`
+are kept for failed runs (or with `--keep`).
 
 ## Installing rez
 

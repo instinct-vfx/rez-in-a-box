@@ -177,6 +177,27 @@ Findings:
 - Extracted sources (~650 MB for a few installs) are deleted after a successful
   install; archives stay cached in `downloads/`.
 
+## Phase 3 status: done
+
+`config/rezconfig.py` (env-driven), sample packages `rezbox_hello` and
+`rezbox_data`, `rezbox test` (11 checks, isolated per run), `rezbox events`
+(live tap queue or queued history).
+
+Findings:
+- rez's Python config loader turns every non-module global into a setting,
+  underscore-prefixed names included, so helpers are deleted at the end of the file.
+- `rez-python` runs rez's interpreter isolated (PYTHONPATH is ignored), so the
+  probe checks package environments through env vars and files instead.
+- `rez-bind python` on Windows needs symlink privileges and bound
+  platform/arch/os packages, and binds whatever `python` is on PATH, which is
+  too fragile for the test.
+- `package_cache_local` only applies when adding to the cache; cached payloads
+  are always read.
+- The git release VCS needs `allow_no_upstream` for repos without a remote;
+  the tag is then only created locally.
+- RabbitMQ 4.x rejects transient non-exclusive queues, so tap queues are
+  durable with `x-expires`.
+
 ## To verify during implementation
 
 - ~~AMQP release hook plugin config keys~~: `plugins.release_hook.amqp` =

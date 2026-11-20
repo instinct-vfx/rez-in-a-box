@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import NoReturn
 
@@ -25,7 +26,7 @@ STATE_DIR = Path(os.environ.get("REZBOX_HOME") or ROOT / ".rezbox").resolve()
 STATE_FILE = STATE_DIR / "state.json"
 sys.path.insert(0, str(ROOT))
 
-from rezbox import broker, rez_install, settings as settings_mod  # noqa: E402
+from rezbox import broker, rez_install, rezenv, settings as settings_mod  # noqa: E402
 from rezbox.memcache import Inspector, MemcacheError  # noqa: E402
 
 LAYOUT = rez_install.Layout(STATE_DIR)
@@ -84,34 +85,9 @@ def find_install(label: str | None) -> dict:
     return installs[label]
 
 
-def _clean_path(path: str) -> str:
-    """Drop the venv uv runs rezbox.py in, so it cannot shadow anything for rez."""
-    own = {os.path.normcase(str(Path(sys.prefix) / d)) for d in ("Scripts", "bin")}
-    return os.pathsep.join(p for p in path.split(os.pathsep)
-                           if p and os.path.normcase(p.rstrip("\\/")) not in own)
-
-
 def rez_environ(meta: dict, s: settings_mod.Settings, target: str = "host") -> dict[str, str]:
     """Environment for running rez from an install against the box's services."""
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME") and not k.startswith("REZ_")}
-    env["PATH"] = meta["bin_dir"] + os.pathsep + _clean_path(env.get("PATH", ""))
-    config = ROOT / "config" / "rezconfig.py"
-    if config.is_file():
-        env["REZ_CONFIG_FILE"] = str(config)
-    env.update({
-        "REZBOX_ROOT": str(ROOT),
-        "REZBOX_HOME": str(STATE_DIR),
-        "REZBOX_ACTIVE": meta["label"],
-        "REZBOX_TARGET": target,
-        "REZBOX_PLATFORM": rez_install.platform_tag(),
-        "REZBOX_MEMCACHED": f"127.0.0.1:{s.memcached_port}",
-        "REZBOX_AMQP_HOST": f"127.0.0.1:{s.amqp_port}",
-        "REZBOX_AMQP_USER": s.rez_user,
-        "REZBOX_AMQP_PASSWORD": s.rez_password,
-        "REZBOX_AMQP_EXCHANGE": s.exchange,
-    })
-    return env
+    return rezenv.rez_environ(ROOT, STATE_DIR, meta, s, target)
 
 
 def current_settings(broker_override: str | None = None) -> settings_mod.Settings:
@@ -375,7 +351,7 @@ def cmd_run(a) -> int:
     env = rez_environ(meta, current_settings())
     _apply_env_overrides(env, a.env)
     # resolve the executable against the *new* PATH (Windows does not do this for us)
-    exe = shutil.which(cmd[0], path=env["PATH"])
+    exe = rezenv.which(cmd[0], env)
     if exe is None:
         fail(f"command not found: {cmd[0]}")
     return subprocess.run([exe, *cmd[1:]], env=env).returncode
@@ -426,7 +402,104 @@ def cmd_env(a) -> int:
     return 0
 
 
-KEEP_ON_RESET = ("rez", "python", "downloads", "src", "state.json")
+def cmd_test(a) -> int:
+    from rezbox.smoke import SmokeTest
+
+    s = current_settings()
+    if a.all:
+        metas = rez_install.installed(LAYOUT)
+        if not metas:
+            fail("no rez installed yet, run: rezbox install-rez")
+    else:
+        metas = [find_install(a.rez)]
+    try:  # fail fast with a clear message if the services are down
+        broker.api_for(s).get("/api/overview")
+        Inspector(memcached_server(s)).stats()
+    except (broker.BrokerError, MemcacheError) as e:
+        fail(f"services not reachable ({e}); run: rezbox up")
+
+    summary = []
+    for meta in metas:
+        t = SmokeTest(ROOT, STATE_DIR, meta, s, make_env=lambda m=meta: rez_environ(m, s),
+                      keep=a.keep, verbose=a.verbose)
+        summary.append((meta["label"], t.run()))
+        print()
+    if len(summary) > 1:
+        for label, ok in summary:
+            print(f"  {'PASS' if ok else 'FAIL'}  {label}")
+    return 0 if all(ok for _, ok in summary) else 1
+
+
+def _fmt_variant(handle) -> str:
+    v = handle.get("variables", handle) if isinstance(handle, dict) else {}
+    if not isinstance(v, dict) or "name" not in v:
+        return str(handle)
+    return f"{v['name']}-{v['version']}" if v.get("version") else v["name"]
+
+
+def format_event(m: dict, live: bool = True) -> str:
+    body, key = m["body"], m["routing_key"] or ""
+    # live: time of arrival; history: the context's own timestamp when it has one
+    ts = None if live else (body.get("context") or {}).get("timestamp") if isinstance(body, dict) else None
+    now = time.strftime("%H:%M:%S", time.localtime(ts)) if (live or ts) else " " * 8
+    if not isinstance(body, dict):
+        return f"{now}  {key:<22} {str(body)[:200]}"
+    who = f"{body.get('user', '?')}@{body.get('host', '?')}"
+    tags = " ".join(f"{k.removeprefix('rezbox_')}={body[k]}" for k in ("rezbox_target", "rezbox_install", "rezbox_run")
+                    if body.get(k))
+    if key.startswith("REZ.CONTEXT"):
+        c = body.get("context", {})
+        req = " ".join(c.get("package_requests") or []) or "(empty)"
+        res = " ".join(_fmt_variant(h) for h in c.get("resolved_packages") or [])
+        cache = "cached " if c.get("from_cache") else ""
+        st = c.get("solve_time")
+        solve = f" solve {st:.3f}s" if isinstance(st, (int, float)) else ""
+        return (f"{now}  {key:<22} {who}  rez {body.get('rez_version', '?')}  [{c.get('status')}] "
+                f"{cache}{req} -> {res}{solve}  {tags}").rstrip()
+    if key.startswith("REZ.PACKAGE"):
+        p = body.get("package", {})
+        nv = len(body.get("variants") or [])
+        return f"{now}  {key:<22} {p.get('user', '?')}  {p.get('qualified_name')}  ({nv} variants) {p.get('uri', '')}  {tags}".rstrip()
+    return f"{now}  {key:<22} {json.dumps(body)[:200]}"
+
+
+def cmd_events(a) -> int:
+    s = current_settings()
+    api = broker.api_for(s)
+    binding = {"all": "#", "context": "REZ.CONTEXT.#", "release": "REZ.PACKAGE.#"}[a.kind]
+
+    def show(msgs, live=True):
+        for m in broker.decode_messages(msgs):
+            print(json.dumps(m) if a.json else format_event(m, live), flush=True)
+
+    try:
+        if a.history:
+            queues = {"all": ["rez.context", "rez.release"], "context": ["rez.context"],
+                      "release": ["rez.release"]}[a.kind]
+            for q in queues:
+                msgs = broker.get_messages(api, s, q, count=a.history, consume=False)
+                if not a.json:
+                    print(f"-- {q}: first {len(msgs)} queued messages (left in the queue)")
+                show(msgs, live=False)
+            return 0
+        queue = f"rezbox.events.{os.getpid()}"
+        broker.create_tap_queue(api, s, queue, binding, expires_ms=60_000)
+        if not a.json:
+            info(f"listening on exchange '{s.exchange}' ({binding}); Ctrl+C to stop")
+        try:
+            while True:
+                show(broker.get_messages(api, s, queue, count=200, consume=True))
+                time.sleep(a.interval)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            broker.delete_queue(api, s, queue)
+    except broker.BrokerError as e:
+        fail(f"{e} (is the box up?)")
+    return 0
+
+
+KEEP_ON_RESET =("rez", "python", "downloads", "src", "state.json")
 
 
 def cmd_reset(a) -> int:
@@ -541,6 +614,21 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "run":
             sp.add_argument("command", nargs=argparse.REMAINDER)
         sp.set_defaults(func=func)
+
+    sp = sub.add_parser("test", help="end-to-end smoke test of rez against the services")
+    sp.add_argument("--rez", metavar="LABEL", help="rez install (default: current)")
+    sp.add_argument("--all", action="store_true", help="test every rez install of this platform")
+    sp.add_argument("--keep", action="store_true", help="keep the test workdir even on success")
+    sp.add_argument("-v", "--verbose", action="store_true", help="show every command run")
+    sp.set_defaults(func=cmd_test)
+
+    sp = sub.add_parser("events", help="show context tracking / release messages")
+    sp.add_argument("kind", nargs="?", default="all", choices=["all", "context", "release"])
+    sp.add_argument("--history", type=int, metavar="N", nargs="?", const=50,
+                    help="show messages already queued in rez.context/rez.release instead of following")
+    sp.add_argument("--json", action="store_true", help="raw messages as JSON lines")
+    sp.add_argument("--interval", type=float, default=1.0, help="poll interval in seconds")
+    sp.set_defaults(func=cmd_events)
 
     sp = sub.add_parser("env", help="print the rez environment for eval/Invoke-Expression")
     sp.add_argument("--rez", metavar="LABEL")

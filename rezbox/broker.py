@@ -142,6 +142,46 @@ def get_messages(api: ManagementAPI, s: Settings, queue: str, count: int = 10,
     return api.post(f"/api/queues/{_q(s.vhost)}/{_q(queue)}/get", body) or []
 
 
+def create_tap_queue(api: ManagementAPI, s: Settings, name: str, binding_key: str = "#",
+                     expires_ms: int = 15 * 60 * 1000) -> None:
+    """A private queue receiving a copy of everything sent to the rez exchange.
+
+    Used by `rezbox test` and `rezbox events` so they never consume from (or
+    need to purge) the real rez.* queues. ``x-expires`` makes the broker drop
+    the queue if a run is interrupted and never cleans up.
+    """
+    v = _q(s.vhost)
+    # durable: RabbitMQ 4.x no longer permits transient non-exclusive queues
+    api.put(f"/api/queues/{v}/{_q(name)}",
+            {"durable": True, "auto_delete": False,
+             "arguments": {"x-expires": expires_ms, "x-max-length": s.queue_max_length}})
+    api.post(f"/api/bindings/{v}/e/{_q(s.exchange)}/q/{_q(name)}",
+             {"routing_key": binding_key, "arguments": {}})
+
+
+def delete_queue(api: ManagementAPI, s: Settings, name: str) -> None:
+    try:
+        api.request("DELETE", f"/api/queues/{_q(s.vhost)}/{_q(name)}")
+    except BrokerError:
+        pass
+
+
+def decode_messages(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Management API messages -> {routing_key, body (parsed JSON or str)}."""
+    out = []
+    for m in raw:
+        body: Any = m.get("payload", "")
+        if m.get("payload_encoding") == "base64":
+            body = base64.b64decode(body).decode("utf-8", "replace")
+        try:
+            body = json.loads(body)
+        except (TypeError, ValueError):
+            pass
+        out.append({"routing_key": m.get("routing_key"), "exchange": m.get("exchange"),
+                    "body": body})
+    return out
+
+
 def publish(api: ManagementAPI, s: Settings, routing_key: str, payload: str) -> bool:
     """Publish a test message to the rez exchange (used by the smoke test)."""
     res = api.post(f"/api/exchanges/{_q(s.vhost)}/{_q(s.exchange)}/publish",
