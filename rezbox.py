@@ -20,12 +20,15 @@ from pathlib import Path
 from typing import NoReturn
 
 ROOT = Path(__file__).resolve().parent
-STATE_DIR = ROOT / ".rezbox"
+# all runtime state (installs, pythons, downloads, repos, caches); no spaces allowed
+STATE_DIR = Path(os.environ.get("REZBOX_HOME") or ROOT / ".rezbox").resolve()
 STATE_FILE = STATE_DIR / "state.json"
 sys.path.insert(0, str(ROOT))
 
-from rezbox import broker, settings as settings_mod  # noqa: E402
+from rezbox import broker, rez_install, settings as settings_mod  # noqa: E402
 from rezbox.memcache import Inspector, MemcacheError  # noqa: E402
+
+LAYOUT = rez_install.Layout(STATE_DIR)
 
 
 # -- helpers ----------------------------------------------------------------
@@ -49,8 +52,66 @@ def load_state() -> dict:
 def save_state(**updates) -> None:
     state = load_state()
     state.update(updates)
-    STATE_DIR.mkdir(exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def current_label() -> str | None:
+    return load_state().get("current_rez", {}).get(rez_install.platform_tag())
+
+
+def set_current_label(label: str | None) -> None:
+    cur = load_state().get("current_rez", {})
+    if label is None:
+        cur.pop(rez_install.platform_tag(), None)
+    else:
+        cur[rez_install.platform_tag()] = label
+    save_state(current_rez=cur)
+
+
+def find_install(label: str | None) -> dict:
+    """Metadata of the requested (or current) rez install on this platform."""
+    installs = {m["label"]: m for m in rez_install.installed(LAYOUT)}
+    if not installs:
+        fail("no rez installed yet, run: rezbox install-rez")
+    label = label or current_label()
+    if label is None:
+        if len(installs) == 1:
+            return next(iter(installs.values()))
+        fail("several rez installs, none selected: run `rezbox use <label>` or pass --rez")
+    if label not in installs:
+        fail(f"no rez install '{label}' (have: {', '.join(installs)})")
+    return installs[label]
+
+
+def _clean_path(path: str) -> str:
+    """Drop the venv uv runs rezbox.py in, so it cannot shadow anything for rez."""
+    own = {os.path.normcase(str(Path(sys.prefix) / d)) for d in ("Scripts", "bin")}
+    return os.pathsep.join(p for p in path.split(os.pathsep)
+                           if p and os.path.normcase(p.rstrip("\\/")) not in own)
+
+
+def rez_environ(meta: dict, s: settings_mod.Settings, target: str = "host") -> dict[str, str]:
+    """Environment for running rez from an install against the box's services."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME") and not k.startswith("REZ_")}
+    env["PATH"] = meta["bin_dir"] + os.pathsep + _clean_path(env.get("PATH", ""))
+    config = ROOT / "config" / "rezconfig.py"
+    if config.is_file():
+        env["REZ_CONFIG_FILE"] = str(config)
+    env.update({
+        "REZBOX_ROOT": str(ROOT),
+        "REZBOX_HOME": str(STATE_DIR),
+        "REZBOX_ACTIVE": meta["label"],
+        "REZBOX_TARGET": target,
+        "REZBOX_PLATFORM": rez_install.platform_tag(),
+        "REZBOX_MEMCACHED": f"127.0.0.1:{s.memcached_port}",
+        "REZBOX_AMQP_HOST": f"127.0.0.1:{s.amqp_port}",
+        "REZBOX_AMQP_USER": s.rez_user,
+        "REZBOX_AMQP_PASSWORD": s.rez_password,
+        "REZBOX_AMQP_EXCHANGE": s.exchange,
+    })
+    return env
 
 
 def current_settings(broker_override: str | None = None) -> settings_mod.Settings:
@@ -206,6 +267,189 @@ def cmd_cache(a) -> int:
     return 0
 
 
+def cmd_releases(a) -> int:
+    try:
+        rels = rez_install.list_releases(a.repo, a.limit)
+    except rez_install.InstallError as e:
+        fail(str(e))
+    print(f"{'tag':<14} {'published':<11} {'archive':<8} {'signed':<7}")
+    for r in rels:
+        pre = "  (prerelease)" if r["prerelease"] else ""
+        print(f"{r['tag']:<14} {r['published']:<11} {'yes' if r['archive'] else 'no':<8} "
+              f"{'yes' if r['signed'] else 'no':<7}{pre}")
+    return 0
+
+
+def cmd_install_rez(a) -> int:
+    if a.git:
+        kind, ref = "git", a.git
+    elif a.path:
+        kind, ref = "path", None
+    else:
+        kind, ref = "release", a.release
+    try:
+        meta = rez_install.install(
+            LAYOUT, kind, ref=ref, path=Path(a.path) if a.path else None, repo=a.repo,
+            python=a.python, label=a.label, verify=a.verify, editable=a.editable, force=a.force)
+    except rez_install.InstallError as e:
+        fail(str(e))
+    except subprocess.CalledProcessError as e:
+        fail(f"command failed: {' '.join(map(str, e.cmd))}")
+    if a.use or current_label() is None:
+        set_current_label(meta["label"])
+    info(f"installed rez {meta['rez_version']} with Python {meta['python']} as '{meta['label']}'"
+         + (" (current)" if current_label() == meta["label"] else ""))
+    print(f"    {meta['bin_dir']}")
+    return 0
+
+
+def _verified_text(src: dict) -> str:
+    v = src.get("verified")
+    if v is True:
+        return "signed+verified"
+    if v is False:
+        return "NOT verified"
+    return "unsigned"
+
+
+def cmd_list_rez(a) -> int:
+    installs = rez_install.installed(LAYOUT)
+    if a.json:
+        print(json.dumps(installs, indent=2))
+        return 0
+    if not installs:
+        info("no rez installs yet, run: rezbox install-rez")
+        return 0
+    cur = current_label()
+    print(f"   {'label':<30} {'rez':<9} {'python':<9} {'source':<34} trust")
+    for m in installs:
+        src = m["source"]
+        if src["kind"] == "release":
+            where = f"release {src['ref']}"
+        elif src["kind"] == "git":
+            where = f"git {src['ref']}@{src['commit'][:8]}"
+        else:
+            where = "path" + (" (editable)" if src.get("editable") else "")
+        if src["kind"] != "path" and src["repo"] != rez_install.DEFAULT_REPO:
+            where += f" [{src['repo']}]"
+        mark = "*" if m["label"] == cur else " "
+        print(f" {mark} {m['label']:<30} {m['rez_version']:<9} {m['python']:<9} {where:<34} "
+              f"{_verified_text(src)}")
+    print(f"\n   platform {rez_install.platform_tag()}, * = current")
+    return 0
+
+
+def cmd_use(a) -> int:
+    meta = find_install(a.label)
+    set_current_label(meta["label"])
+    info(f"current rez: {meta['label']} (rez {meta['rez_version']}, Python {meta['python']})")
+    return 0
+
+
+def cmd_remove_rez(a) -> int:
+    try:
+        rez_install.remove(LAYOUT, a.label)
+    except rez_install.InstallError as e:
+        fail(str(e))
+    if current_label() == a.label:
+        set_current_label(None)
+    info(f"removed {a.label}")
+    return 0
+
+
+def _apply_env_overrides(env: dict[str, str], pairs: list[str]) -> None:
+    for p in pairs or []:
+        k, sep, v = p.partition("=")
+        if not sep:
+            fail(f"--env expects KEY=VALUE, got {p!r}")
+        env[k] = v
+
+
+def cmd_run(a) -> int:
+    cmd = list(a.command)
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+    if not cmd:
+        fail("nothing to run, usage: rezbox run [--rez LABEL] -- <command> [args]")
+    meta = find_install(a.rez)
+    env = rez_environ(meta, current_settings())
+    _apply_env_overrides(env, a.env)
+    # resolve the executable against the *new* PATH (Windows does not do this for us)
+    exe = shutil.which(cmd[0], path=env["PATH"])
+    if exe is None:
+        fail(f"command not found: {cmd[0]}")
+    return subprocess.run([exe, *cmd[1:]], env=env).returncode
+
+
+def cmd_shell(a) -> int:
+    meta = find_install(a.rez)
+    env = rez_environ(meta, current_settings())
+    _apply_env_overrides(env, a.env)
+    label = meta["label"]
+    info(f"rez {meta['rez_version']} (Python {meta['python']}, '{label}'); exit the shell to leave")
+    if os.name == "nt":
+        ps = shutil.which("pwsh") or shutil.which("powershell")
+        if not ps:
+            return subprocess.run([os.environ.get("COMSPEC", "cmd.exe")], env=env).returncode
+        prompt = ("function global:prompt { \"[rezbox " + label + "] PS \" + "
+                  "$executionContext.SessionState.Path.CurrentLocation + '> ' }")
+        return subprocess.run([ps, "-NoLogo", "-NoExit", "-Command", prompt], env=env).returncode
+    shell = os.environ.get("SHELL") or "/bin/sh"
+    if Path(shell).name == "bash":
+        rc = STATE_DIR / "bashrc"
+        rc.write_text('[ -f ~/.bashrc ] && . ~/.bashrc\nPS1="[rezbox ' + label + '] $PS1"\n')
+        return subprocess.run([shell, "--rcfile", str(rc), "-i"], env=env).returncode
+    env["PS1"] = f"[rezbox {label}] $ "
+    return subprocess.run([shell, "-i"], env=env).returncode
+
+
+def cmd_env(a) -> int:
+    """Print the environment so it can be applied to the current shell."""
+    meta = find_install(a.rez)
+    env = rez_environ(meta, current_settings())
+    keys = ["REZ_CONFIG_FILE"] + sorted(k for k in env if k.startswith("REZBOX_"))
+    style = a.shell or ("powershell" if os.name == "nt" else "sh")
+
+    def q(v: str) -> str:
+        if style == "powershell":
+            return "'" + v.replace("'", "''") + "'"
+        return "'" + v.replace("'", "'\\''") + "'"
+
+    # prepend rez to the PATH of the shell that evaluates this, not a snapshot of ours
+    if style == "powershell":
+        print(f"$env:PATH = {q(meta['bin_dir'] + os.pathsep)} + $env:PATH")
+    else:
+        print(f"export PATH={q(meta['bin_dir'])}:\"$PATH\"")
+    for k in keys:
+        if k in env:
+            print(f"$env:{k} = {q(env[k])}" if style == "powershell" else f"export {k}={q(env[k])}")
+    return 0
+
+
+KEEP_ON_RESET = ("rez", "python", "downloads", "src", "state.json")
+
+
+def cmd_reset(a) -> int:
+    what = "services, broker data and ALL of .rezbox (installs, pythons, downloads)" if a.all \
+        else f"services, broker data and .rezbox state (keeping {', '.join(KEEP_ON_RESET)})"
+    if not a.yes:
+        if not sys.stdin.isatty():
+            fail("refusing to reset without --yes in a non-interactive session")
+        if input(f"Reset {what}? [y/N] ").strip().lower() not in ("y", "yes"):
+            info("aborted")
+            return 1
+    compose(["down", "--remove-orphans", "--volumes"], profiles=list(settings_mod.BROKERS))
+    if STATE_DIR.is_dir():
+        for child in STATE_DIR.iterdir():
+            if a.all or child.name not in KEEP_ON_RESET:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+    info("reset done; run `rezbox up` to start again")
+    return 0
+
+
 # -- CLI ----------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -244,6 +488,64 @@ def build_parser() -> argparse.ArgumentParser:
     csub.add_parser("flush")
     csub.add_parser("reset-stats")
     sp.set_defaults(func=cmd_cache)
+
+    sp = sub.add_parser("reset", help="stop services, delete broker data and box state")
+    sp.add_argument("--all", action="store_true",
+                    help="also delete rez installs, Pythons and downloads")
+    sp.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+    sp.set_defaults(func=cmd_reset)
+
+    # -- rez installs
+    sp = sub.add_parser("releases", help="list rez releases on GitHub")
+    sp.add_argument("--repo", default=rez_install.DEFAULT_REPO)
+    sp.add_argument("--limit", type=int, default=15)
+    sp.set_defaults(func=cmd_releases)
+
+    sp = sub.add_parser("install-rez", help="install rez (GitHub release by default)")
+    src = sp.add_mutually_exclusive_group()
+    src.add_argument("--release", default="latest", metavar="TAG",
+                     help="release tag, or 'latest' (default)")
+    src.add_argument("--git", metavar="REF", help="branch, tag or commit (unreleased code)")
+    src.add_argument("--path", metavar="DIR", help="local rez checkout")
+    sp.add_argument("--repo", default=rez_install.DEFAULT_REPO,
+                    help="GitHub repo for --release/--git, e.g. a fork (default: %(default)s)")
+    sp.add_argument("--python", default=rez_install.DEFAULT_PYTHON,
+                    choices=rez_install.SUPPORTED_PYTHONS)
+    sp.add_argument("--label", help="install name (default: derived from source and Python)")
+    sp.add_argument("--no-verify", dest="verify", action="store_false",
+                    help="skip sigstore verification of release archives")
+    sp.add_argument("--editable", action="store_true", help="editable install (--path only)")
+    sp.add_argument("--force", action="store_true", help="replace an existing install")
+    sp.add_argument("--use", action="store_true", help="make it the current install")
+    sp.set_defaults(func=cmd_install_rez)
+
+    sp = sub.add_parser("list-rez", help="list rez installs")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_list_rez)
+
+    sp = sub.add_parser("use", help="select the current rez install")
+    sp.add_argument("label")
+    sp.set_defaults(func=cmd_use)
+
+    sp = sub.add_parser("remove-rez", help="delete a rez install")
+    sp.add_argument("label")
+    sp.set_defaults(func=cmd_remove_rez)
+
+    for name, func, hlp in (("shell", cmd_shell, "interactive shell with rez on PATH"),
+                            ("run", cmd_run, "run a command with rez on PATH")):
+        sp = sub.add_parser(name, help=hlp)
+        sp.add_argument("--rez", metavar="LABEL", help="rez install (default: current)")
+        sp.add_argument("-e", "--env", action="append", metavar="KEY=VALUE",
+                        help="extra environment variable (repeatable; REZ_* from the "
+                             "calling shell are dropped for isolation)")
+        if name == "run":
+            sp.add_argument("command", nargs=argparse.REMAINDER)
+        sp.set_defaults(func=func)
+
+    sp = sub.add_parser("env", help="print the rez environment for eval/Invoke-Expression")
+    sp.add_argument("--rez", metavar="LABEL")
+    sp.add_argument("--shell", choices=["sh", "powershell"])
+    sp.set_defaults(func=cmd_env)
     return p
 
 

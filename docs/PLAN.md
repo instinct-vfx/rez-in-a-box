@@ -155,6 +155,28 @@ Findings:
 - Protocol-0 pickles encode bytes via `_codecs.encode`; the restricted
   unpickler allows only that call, through a safe wrapper.
 
+## Phase 2 status: done
+
+`install-rez` (release / git / path, Python 3.11-3.13), `releases`, `list-rez`,
+`use`, `remove-rez`, `shell`, `run`, `env`, `reset`. Tested on Windows with
+3.5.0 (py3.11, py3.13), 3.4.0 (py3.12), 3.2.1 (unsigned fallback), `main`, and an
+editable path install. A tampered archive and a mismatched bundle are both rejected.
+
+Findings:
+- Release bundles are GitHub build-provenance attestations (in-toto SLSA v1 in
+  a DSSE envelope) from `.github/workflows/pypi.yaml@refs/tags/<tag>`.
+  `sigstore verify github` handles them without `gh` or a GitHub token.
+- GitHub's API reports a sha256 `digest` for each release asset; it is checked
+  before sigstore runs.
+- install.py builds the venv from the interpreter running it, so the venv's
+  `home` points at that interpreter. Pythons are therefore kept in the box
+  (`UV_PYTHON_INSTALL_DIR`, `--no-bin --no-registry`), not in the user's uv store.
+- `uv run --script` puts its own venv on PATH; it is stripped from rez's environment.
+- Python support per rez version is read from the source's setup.py
+  classifiers; a warning is printed when the chosen Python is not declared.
+- Extracted sources (~650 MB for a few installs) are deleted after a successful
+  install; archives stay cached in `downloads/`.
+
 ## To verify during implementation
 
 - ~~AMQP release hook plugin config keys~~: `plugins.release_hook.amqp` =
@@ -162,5 +184,5 @@ Findings:
   exchange_routing_key (default `REZ.PACKAGE.RELEASED`), message_delivery_mode,
   message_attributes
 - ~~rez memcached key format / value serialization~~: see `rezbox/memcache.py` docstring
-- Minimum rez release supporting Python 3.13 (warn when combining an older tag with 3.13)
-- Exact sigstore identity (workflow path) used by rez release signing
+- ~~Minimum rez release supporting Python 3.13~~: handled generically through setup.py classifiers
+- ~~Exact sigstore identity~~: `.github/workflows/pypi.yaml@refs/tags/<tag>`, issuer `https://token.actions.githubusercontent.com`

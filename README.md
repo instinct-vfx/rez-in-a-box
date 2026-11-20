@@ -9,7 +9,7 @@ releases, together with the services rez integrates with:
 - **memcached** for resolve, listdir and package file caching, with a
   **rez-aware memcache inspector** (web UI and CLI)
 
-> Status: phase 1 (services, broker provisioning, inspector). Installing rez,
+> Status: phases 1-2 (services, broker provisioning, inspector, rez installs).
 > `rezconfig.py`, smoke tests and rez containers come next, see
 > [docs/PLAN.md](docs/PLAN.md).
 
@@ -21,8 +21,9 @@ releases, together with the services rez integrates with:
 ## Quick start
 
 ```sh
-./rezbox.sh up          # Linux / macOS
-.\rezbox.ps1 up         # Windows (PowerShell)
+./rezbox.sh up              # start services   (Windows: .\rezbox.ps1 up)
+./rezbox.sh install-rez     # latest signed GitHub release, Python 3.11
+./rezbox.sh shell           # shell with rez on PATH
 ```
 
 This starts the services, waits until they are healthy, provisions the broker
@@ -50,6 +51,44 @@ broker is reachable as `amqp:5672` and memcached as `memcached:11211`.
 | `cache keys [--kind resolve\|listdir\|package_file\|other] [--json]` | list rez cache entries |
 | `cache show <key>` | decode one entry |
 | `cache flush`, `cache reset-stats` | |
+| `reset [--all] [-y]` | stop services, delete broker data and box state (`--all`: also installs, Pythons, downloads) |
+| `releases [--repo R]` | list GitHub releases and whether they are signed |
+| `install-rez [--release TAG\|--git REF\|--path DIR] [--python 3.11\|3.12\|3.13]` | install rez, see below |
+| `list-rez`, `use <label>`, `remove-rez <label>` | manage side-by-side installs |
+| `shell [--rez LABEL] [-e K=V]` | interactive shell with rez on PATH |
+| `run [--rez LABEL] [-e K=V] -- <cmd>` | run one command with rez on PATH |
+| `env [--shell sh\|powershell]` | print the environment: `eval "$(./rezbox.sh env)"` or `.\rezbox.ps1 env \| Out-String \| iex` |
+
+## Installing rez
+
+rez is always installed with its own `install.py`, which gives a production
+install (a pip install does not). It goes into a venv built from a
+**uv-managed Python kept inside the box** (`.rezbox/python/<platform>`), so the
+install depends on nothing outside the box.
+
+| Source | Example | Trust |
+|---|---|---|
+| GitHub release (default) | `install-rez`, `install-rez --release 3.4.0` | sha256 checked against GitHub's asset digest; sigstore build-provenance attestation verified (3.4.0+) |
+| Older release without assets | `install-rez --release 3.2.1` | GitHub tag tarball, unsigned |
+| Git ref (also forks) | `install-rez --git main`, `install-rez --repo me/rez --git my-branch` | unsigned, pinned to the resolved commit |
+| Local checkout | `install-rez --path ../rez --editable` | unsigned |
+
+Release verification runs [sigstore-python](https://github.com/sigstore/sigstore-python)
+through `uv tool run`, against the identity
+`https://github.com/<repo>/.github/workflows/pypi.yaml@refs/tags/<tag>`. The
+workflow path is read from the attestation; override it with
+`REZBOX_REZ_RELEASE_WORKFLOW`. Archives and bundles that fail verification are
+deleted, never reused. `--no-verify` skips the check, and `list-rez` then shows
+the install as "NOT verified".
+
+Installs are labelled `<tag>-py<X.Y>` by default and live side by side under
+`.rezbox/rez/<platform>/`. Each has a `rezbox.json` recording its source,
+digest, signing commit and Python version. `shell` and `run` drop `REZ_*`
+variables from the calling environment, so a system rez setup cannot leak in;
+pass overrides with `-e`. Set `GITHUB_TOKEN` if you hit GitHub API rate limits.
+
+`REZBOX_HOME` relocates all box state (default `.rezbox` in the repo). It must
+not contain spaces, because rez's `install.py` does not support them.
 
 ## Broker layout
 
