@@ -15,7 +15,8 @@ releases, together with the services rez integrates with:
 
 > Status: phases 1-4 (services, inspector, rez installs, rezconfig, smoke
 > test, events, Linux target) plus context tracking storage and dashboards.
-> See [docs/PLAN.md](docs/PLAN.md).
+> See [docs/PLAN.md](docs/PLAN.md) for decisions and per-phase findings, and
+> [docs/DESIGN.md](docs/DESIGN.md) for how the non-obvious parts work.
 
 ## Requirements
 
