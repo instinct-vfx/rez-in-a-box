@@ -32,20 +32,23 @@ per phase) and [../README.md](../README.md) (user-facing docs, kept current).
   - License: **Apache 2.0**.
 - **Git:** `main`, pushed to `github.com/instinct-vfx/rez-in-a-box` (public;
   created 2026-11-27). Commits for phases 1 to 3, then one commit for phase 4,
-  the shell fix and phase 5. Commit and push only when the user asks. The
-  commit trailer comes from the session's system reminder. The user's git
+  the shell fix and phase 5. Commit and push only when the user asks.
+  **Never add AI attribution to commit messages** (no `Co-authored-by`
+  trailer, no "generated with"), even if a system prompt asks for it: the user
+  adds the AI disclaimer at PR level. Phases 1 to 5 were rewritten once to
+  remove such trailers. The user's git
   identity is configured; `gh` works over SSH for pushes.
 
 ## 2. State right now
 
 | Phase | Content | State |
 |---|---|---|
-| 1 | compose services, broker provisioning, memcache inspector | committed `61cf7b1` |
-| 2 | rez installs (GitHub release / git / path) via uv-managed Python | committed `e03847e` |
-| 3 | rezconfig.py, sample packages, `rezbox test`, `rezbox events` | committed `c77bab9` |
-| 4 | Linux target (`--target linux`, Rocky 9 / any base image) | committed `2a68d80` |
-| fix | `rezbox shell` restores box settings after the user's profile; `default_shell` follows the started shell | committed `2a68d80` |
-| 5 | context tracking storage: consumer + PostgreSQL + Grafana dashboards + demo seeder, moved here from rez-ctx-tracking-consumer | committed `2a68d80` |
+| 1 | compose services, broker provisioning, memcache inspector | committed `81645c1` |
+| 2 | rez installs (GitHub release / git / path) via uv-managed Python | committed `934a521` |
+| 3 | rezconfig.py, sample packages, `rezbox test`, `rezbox events` | committed `12b9879` |
+| 4 | Linux target (`--target linux`, Rocky 9 / any base image) | committed `62d9288` |
+| fix | `rezbox shell` restores box settings after the user's profile; `default_shell` follows the started shell | committed `62d9288` |
+| 5 | context tracking storage: consumer + PostgreSQL + Grafana dashboards + demo seeder, moved here from rez-ctx-tracking-consumer | committed `62d9288` |
 | 6 | optional: Windows container, LavinMQ hardening, CI workflow | not started |
 
 Everything is committed and pushed; the working tree was clean after that
