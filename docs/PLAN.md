@@ -16,6 +16,9 @@ tracking, memcached caching) and UIs to inspect them.
 | Linux container | Rocky Linux 9 default, base image overridable via build arg. |
 | Windows | Native host install now. Windows container (servercore ltsc2022) deferred / optional. |
 | Extras | AMQP release hook and `rezbox events` included from the start. |
+| Context tracking storage | The separate project [rez-ctx-tracking-consumer](https://github.com/instinct-vfx/rez-ctx-tracking-consumer) runs as a published, version-pinned image (`REZBOX_CONSUMER_IMAGE`) with PostgreSQL. The box has no consumer of its own. |
+| Dashboards | Grafana (provisioned from `services/grafana/`) on a read-only database role, on by default; `up --no-dashboards` / `--no-tracking` switch them off. |
+| Demo data | `rezbox seed-demo` runs `services/demo-seeder/` inside the consumer image (it imports the consumer's parser and store), hence the pinned version. |
 | License | Apache 2.0 |
 
 ## Layout
@@ -23,8 +26,11 @@ tracking, memcached caching) and UIs to inspect them.
 ```
 rezbox.ps1 / rezbox.sh        shims -> uv run rezbox.py
 rezbox.py                     single entry point
-compose.yaml                  rabbitmq | lavinmq (profile), memcached, memcache-ui, rez-linux (profile)
+compose.yaml                  rabbitmq | lavinmq (profile), memcached, memcache-ui, postgres + consumer (profile tracking),
+                              grafana + grafana-db-init (profile dashboards), seed-demo (profile tools), rez-linux (profile rez)
 services/memcache-ui/         inspector web app (Python) + Dockerfile
+services/grafana/             dashboards, provisioning, read-only role (moved from rez-ctx-tracking-consumer)
+services/demo-seeder/         demo data generator, runs in the consumer image (moved from rez-ctx-tracking-consumer)
 config/rezconfig.py           env-driven, works on host and in containers
 docker/rez-linux/Dockerfile   ARG BASE_IMAGE=rockylinux:9
 docker/rez-windows/Dockerfile (phase 5)
@@ -43,14 +49,18 @@ All ports bound to `127.0.0.1` only.
 | lavinmq (profile `lavinmq`) | 5672, 15672 (UI) | alternative to rabbitmq |
 | memcached | 11211 | `-m` memory configurable |
 | memcache-ui | 8080 | rez-aware inspector |
+| postgres (profile `tracking`) | 5432 | database `rez`, user/password `rez` |
+| consumer (profile `tracking`) | 9100 | `/healthz`, `/metrics`; pinned GHCR image |
+| grafana (profile `dashboards`) | 3000 | anonymous viewer; `grafana-db-init` creates the read-only role |
 | rez-linux (profile `rez`) | – | runs rez against services by service name |
 
 ### Broker provisioning (idempotent, via HTTP management API — works for RabbitMQ and LavinMQ)
 
 - user `rez` / `rez` with permissions on vhost `/` (rez's `context_tracking_amqp` has no vhost key, pika defaults to `/`)
 - exchange `rez` — `topic`, durable
-- queue `rez.context` bound with `REZ.CONTEXT.#`, `x-max-length` cap
 - queue `rez.release` bound with the release hook routing key, `x-max-length` cap
+- with tracking on: user `rez-consumer` (configure/read the exchange and its queue, write only that queue) and queue `rez.context.tracking` bound `REZ.CONTEXT.*`, created without arguments because the consumer declares it itself and fails on mismatching arguments; deleted again when tracking is off
+- the old capped queue `rez.context` (nothing consumed it) is deleted
 
 ## memcache inspector
 
@@ -119,7 +129,8 @@ and mounts repos; package caches stay per-platform.
 
 1. Build + release sample packages (exercises the AMQP release hook -> `rez.release`).
 2. Resolve twice -> memcached `get_hits` increases, resolve reports `from_cache`.
-3. Context tracking message for the resolve appears in `rez.context`.
+3. Context tracking message for the resolve appears on the tap queue, and
+   (tracking on) is stored in the consumer's database.
 4. Package cache contains the resolved variants (`rez-pkg-cache` listing).
 5. Pass/fail summary; same test runs for `--target host` and `--target linux`.
 
@@ -137,7 +148,8 @@ install. macOS: native only (no macOS containers).
 2. `rezbox.py` lifecycle + GitHub-release rez install via uv (+ sigstore verify)
 3. `rezconfig.py`, sample packages, `rezbox test`, `events`, `cache` CLI
 4. Linux rez container (Rocky 9 default, overridable)
-5. Optional: LavinMQ profile hardening, Windows container, CI workflow
+5. Context tracking storage (consumer, PostgreSQL) and Grafana dashboards
+6. Optional: LavinMQ profile hardening, Windows container, CI workflow
 
 ## Phase 1 status: done
 
@@ -197,6 +209,59 @@ Findings:
   the tag is then only created locally.
 - RabbitMQ 4.x rejects transient non-exclusive queues, so tap queues are
   durable with `x-expires`.
+
+## Phase 4 status: done
+
+`--target linux [--base-image IMAGE] [--rebuild-image]` for install-rez,
+list-rez, use, remove-rez, shell, run, test, env. Verified on rockylinux:9
+(rez 3.5.0 / py3.11) and ubuntu:24.04 (rez 3.5.0 / py3.13): signed install
+plus all 11 smoke checks; interactive bash shell.
+
+Design: the container is a run target for rezbox.py itself (repo mounted
+read-only), not a rez image, so host and Linux share one code path.
+
+Findings:
+- A Windows NTFS bind mount is a poor home for Linux venvs (symlinks, speed),
+  so each base image gets a named volume. These are created by rezbox and
+  declared `external`; compose-created volumes produced label-mismatch
+  warnings whenever another base image was used.
+- rez warns "Package caching disabled" and refuses to release when the default
+  directories do not exist, so rezbox creates them before starting rez.
+- Service addresses are configurable (`REZBOX_AMQP_HOSTNAME`,
+  `REZBOX_MEMCACHED_HOSTNAME`): 127.0.0.1 on the host, compose names in containers.
+- The smoke test runs about 4x faster in the Linux container than on the
+  Windows host (process startup).
+
+## Phase 5 status: done
+
+Context tracking storage and dashboards, moved here from the standalone
+[rez-ctx-tracking-consumer](https://github.com/instinct-vfx/rez-ctx-tracking-consumer)
+repository, which is now only the consumer (package, Docker image, tests).
+The box replaced its own, unconsumed `rez.context` queue with that consumer.
+
+- `up` starts postgres, consumer, Grafana by default (`--no-tracking`,
+  `--no-dashboards`; remembered in `state.json`). It starts the broker first,
+  provisions it, then starts the consumer: the consumer's health check needs
+  its broker account and queue.
+- `events context --history` and `status` read the database; `rezbox test` has
+  a `tracking-stored` check (skipped when storage is off or not queryable).
+- `rezbox seed-demo` and `rezbox test-dashboards` (all dashboard queries
+  against demo data, in a throwaway compose project on free ports).
+- rezconfig adds `failure_description` to the tracked context fields.
+
+Findings:
+- The database is queried through Grafana's `/api/ds/query` (anonymous Viewer),
+  because `rezbox/` is stdlib-only and the Linux target has no docker. On the
+  host a `psql` fallback in the postgres container is used when Grafana is off.
+- Grafana frames collapse columns with the same name; alias expressions.
+- Verified: RabbitMQ and LavinMQ, host and Linux target (12/12 smoke checks),
+  `--no-tracking`/`--no-dashboards`, dashboards test 8/8.
+- Not verified: pulling the image from GHCR (not published yet; the box was
+  tested with a locally built image under the pinned tag).
+
+## Phase 6 (optional, not started)
+
+LavinMQ hardening (healthcheck), Windows container, CI workflow.
 
 ## To verify during implementation
 

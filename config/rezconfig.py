@@ -50,6 +50,17 @@ packages_path = [local_packages_path, release_packages_path]
 
 
 ###############################################################################
+# Shell
+###############################################################################
+
+# `rezbox shell` sets this to the shell it starts (e.g. pwsh), so rez-env
+# inside it uses the same one. rez on Windows otherwise defaults to Windows
+# PowerShell.
+if _env("REZBOX_DEFAULT_SHELL"):
+    default_shell = _env("REZBOX_DEFAULT_SHELL")
+
+
+###############################################################################
 # memcached: resolves, directory listings, package definition files
 ###############################################################################
 
@@ -118,6 +129,14 @@ context_tracking_amqp = {
 }
 
 context_tracking_extra_fields = dict(_extra_fields)
+
+# rez's default fields plus failure_description, which the consumer's failed
+# resolves dashboard panels show.
+context_tracking_context_fields = [
+    "status", "timestamp", "solve_time", "load_time", "from_cache",
+    "package_requests", "implicit_packages", "resolved_packages",
+    "failure_description",
+]
 
 if _flag("REZBOX_RELEASE_HOOK", True):
     release_hooks = ["amqp"]

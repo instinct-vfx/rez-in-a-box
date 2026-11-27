@@ -1,0 +1,457 @@
+{
+  "uid": "rez-event",
+  "title": "rez: Event",
+  "description": "One context event in detail.",
+  "tags": [
+    "rez"
+  ],
+  "timezone": "utc",
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "refresh": "",
+  "links": [
+    {
+      "title": "rez dashboards",
+      "type": "dashboards",
+      "tags": [
+        "rez"
+      ],
+      "asDropdown": false,
+      "keepTime": true,
+      "includeVars": false,
+      "targetBlank": false,
+      "icon": "external link"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "id",
+        "label": "Event id",
+        "description": "The id of a rez_context_event row",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "type": "table",
+      "title": "Event",
+      "description": "Enter an event id at the top, or click one on another dashboard.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rez-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rez-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT f.field AS \"Field\", f.value AS \"Value\"\nFROM rez_context_event AS e,\nLATERAL (VALUES\n    (1, 'Received', to_char(e.received_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC'),\n    (2, 'Action', e.action),\n    (3, 'User', e.username),\n    (4, 'Host', e.host),\n    (5, 'Status', e.status),\n    (6, 'Failure', e.context->>'failure_description'),\n    (7, 'Resolved at',\n        to_char(e.context_timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') || ' UTC'),\n    (8, 'Solve time', round(e.solve_time::numeric, 4) || ' s'),\n    (9, 'Load time', round(e.load_time::numeric, 4) || ' s'),\n    (10, 'From cache', CASE e.from_cache WHEN true THEN 'yes' WHEN false THEN 'no' END),\n    (11, 'rez version', e.rez_version),\n    (12, 'Routing key', e.routing_key)\n) AS f(ord, field, value)\nWHERE e.id = substring('$id' FROM '^[0-9]{1,18}$')::bigint AND f.value IS NOT NULL\nORDER BY f.ord"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "inspect": true,
+            "filterable": false,
+            "wrapText": true,
+            "cellOptions": {
+              "type": "auto",
+              "wrapText": true
+            }
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Field"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": false,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 9,
+        "h": 14
+      }
+    },
+    {
+      "type": "table",
+      "title": "Requests",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rez-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rez-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT r.request AS \"Request\", r.kind AS \"Kind\"\nFROM rez_context_event AS e,\nLATERAL (\n    SELECT request, 'requested' AS kind, ord\n    FROM unnest(e.package_requests) WITH ORDINALITY AS t(request, ord)\n    UNION ALL\n    SELECT request, 'implicit', 1000 + ord\n    FROM unnest(e.implicit_packages) WITH ORDINALITY AS t(request, ord)\n) AS r\nWHERE e.id = substring('$id' FROM '^[0-9]{1,18}$')::bigint\nORDER BY r.ord"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "inspect": true,
+            "filterable": false
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 9,
+        "y": 0,
+        "w": 6,
+        "h": 14
+      }
+    },
+    {
+      "type": "table",
+      "title": "Resolved packages",
+      "description": "From the variant handles in the context. Empty for a failed resolve.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rez-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rez-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT pkg->'variables'->>'name' AS \"Package\",\n       pkg->'variables'->>'version' AS \"Version\",\n       pkg->'variables'->>'location' AS \"Repository\"\nFROM rez_context_event AS e,\n     jsonb_array_elements(\n         CASE WHEN jsonb_typeof(e.context->'resolved_packages') = 'array'\n              THEN e.context->'resolved_packages' ELSE '[]'::jsonb END\n     ) AS pkg\nWHERE e.id = substring('$id' FROM '^[0-9]{1,18}$')::bigint\nORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "inspect": true,
+            "filterable": false
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Package"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show package family",
+                    "url": "/d/rez-package-family/?var-family=${__value.raw}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 3,
+      "gridPos": {
+        "x": 15,
+        "y": 0,
+        "w": 9,
+        "h": 14
+      }
+    },
+    {
+      "type": "table",
+      "title": "Same user, one hour before and after",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rez-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rez-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT o.received_at AS \"Time\",\n       o.id AS \"Event\",\n       o.action AS \"Action\",\n       o.host AS \"Host\",\n       o.status AS \"Status\",\n       array_to_string(o.package_requests, ' ') AS \"Request\"\nFROM rez_context_event AS e\nJOIN rez_context_event AS o\n  ON o.username = e.username\n AND o.received_at BETWEEN e.received_at - interval '1 hour' AND e.received_at + interval '1 hour'\nWHERE e.id = substring('$id' FROM '^[0-9]{1,18}$')::bigint\nORDER BY o.received_at\nLIMIT 200"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "inspect": true,
+            "filterable": false
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Event"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show event",
+                    "url": "/d/rez-event/?var-id=${__value.raw}&${__url_time_range}"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Action"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Host"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "solved": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "failed": {
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 4,
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 8
+      }
+    },
+    {
+      "type": "table",
+      "title": "Stored context and extra fields (JSONB)",
+      "description": "Everything rez sent besides the top-level fields, as stored in the context and extra columns.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rez-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rez-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT kv.col AS \"Column\", kv.key AS \"Key\", kv.value AS \"Value\"\nFROM rez_context_event AS e,\nLATERAL (\n    SELECT 'context' AS col, key, value::text AS value\n    FROM jsonb_each(CASE WHEN jsonb_typeof(e.context) = 'object'\n                         THEN e.context ELSE '{}'::jsonb END)\n    UNION ALL\n    SELECT 'extra', key, value::text\n    FROM jsonb_each(e.extra)\n) AS kv\nWHERE e.id = substring('$id' FROM '^[0-9]{1,18}$')::bigint\nORDER BY 1, 2"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "inspect": true,
+            "filterable": false,
+            "wrapText": true,
+            "cellOptions": {
+              "type": "auto",
+              "wrapText": true
+            }
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Column"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Key"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 190
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 5,
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 14
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

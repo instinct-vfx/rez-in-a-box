@@ -1,0 +1,19 @@
+# The rez tracking database, read through the read-only role.
+# Values come from the grafana service's environment (see docker-compose.yml).
+apiVersion: 1
+
+datasources:
+  - name: rez tracking
+    uid: rez-postgres
+    type: grafana-postgresql-datasource
+    url: ${GRAFANA_DB_HOST}
+    user: ${GRAFANA_DB_USER}
+    secureJsonData:
+      password: ${GRAFANA_DB_PASSWORD}
+    jsonData:
+      database: ${GRAFANA_DB_NAME}
+      sslmode: disable
+      postgresVersion: 1500
+      maxOpenConns: 5
+    isDefault: true
+    editable: false

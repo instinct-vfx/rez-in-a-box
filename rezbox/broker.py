@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 import urllib.error
 import urllib.request
 from typing import Any
 from urllib.parse import quote
 
-from .settings import Settings
+from .settings import QueueSpec, Settings
 
 
 class BrokerError(RuntimeError):
@@ -117,13 +118,60 @@ def provision(api: ManagementAPI, s: Settings) -> list[str]:
             api.post(f"/api/bindings/{v}/e/{_q(s.exchange)}/q/{_q(q.name)}",
                      {"routing_key": q.binding_key, "arguments": {}})
         done.append(f"binding {s.exchange} -[{q.binding_key}]-> {q.name}")
+
+    if s.tracking:
+        done += _provision_consumer(api, s, existing)
+    else:  # nobody would drain it
+        done += _drop_queue(api, s, s.consumer_queue, "context tracking storage is off")
+    done += _drop_queue(api, s, "rez.context",
+                        "unused; context tracking is stored by the consumer now")
     return done
+
+
+def _provision_consumer(api: ManagementAPI, s: Settings,
+                        bindings: set[tuple[str, str]]) -> list[str]:
+    """The account and queue of the context tracking consumer.
+
+    The consumer declares its exchange and queue itself (and fails if a queue
+    exists with other arguments), so the queue is created exactly as it would
+    declare it: durable, without arguments. Creating it here means messages
+    published before the consumer first starts are not lost. The account may
+    only touch the exchange and that queue.
+    """
+    v = _q(s.vhost)
+    queue = _q(s.consumer_queue)
+    api.put(f"/api/users/{_q(s.consumer_user)}",
+            {"password": s.consumer_password, "tags": ""})
+    names = f"^({re.escape(s.exchange)}|{re.escape(s.consumer_queue)})$"
+    api.put(f"/api/permissions/{v}/{_q(s.consumer_user)}",
+            {"configure": names, "write": f"^{re.escape(s.consumer_queue)}$", "read": names})
+    api.put(f"/api/queues/{v}/{queue}", {"durable": True, "auto_delete": False, "arguments": {}})
+    if (s.consumer_queue, s.consumer_binding_key) not in bindings:
+        api.post(f"/api/bindings/{v}/e/{_q(s.exchange)}/q/{queue}",
+                 {"routing_key": s.consumer_binding_key, "arguments": {}})
+    return [f"user {s.consumer_user} (consumer)",
+            f"queue {s.consumer_queue}",
+            f"binding {s.exchange} -[{s.consumer_binding_key}]-> {s.consumer_queue}"]
+
+
+def _drop_queue(api: ManagementAPI, s: Settings, name: str, why: str) -> list[str]:
+    """Delete a queue that exists but is no longer wanted. Earlier boxes kept
+    context messages in a capped queue `rez.context` that nothing consumed."""
+    try:
+        api.get(f"/api/queues/{_q(s.vhost)}/{_q(name)}")
+    except BrokerError:
+        return []
+    api.request("DELETE", f"/api/queues/{_q(s.vhost)}/{_q(name)}")
+    return [f"removed queue {name} ({why})"]
 
 
 def queue_info(api: ManagementAPI, s: Settings) -> list[dict[str, Any]]:
     v = _q(s.vhost)
+    specs = list(s.queues)
+    if s.tracking:
+        specs.append(QueueSpec(s.consumer_queue, s.consumer_binding_key))
     out = []
-    for q in s.queues:
+    for q in specs:
         try:
             info = api.get(f"/api/queues/{v}/{_q(q.name)}")
             out.append({"name": q.name, "messages": info.get("messages", 0),

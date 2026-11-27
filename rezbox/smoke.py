@@ -14,6 +14,8 @@ Checks:
   resolve         first resolve succeeds, not from memcached
   resolve-cached  identical resolve comes from memcached, get_hits increase
   tracking        context tracking messages arrive, with from_cache flags
+  tracking-stored the consumer stored them in PostgreSQL (skipped when the
+                  storage is off or the database cannot be queried)
   payload-cache   resolved env points into the package cache (released package)
   invalidation    releasing a newer version invalidates the cached resolve
   local-cache     local package (rez-build -i) is payload-cached (package_cache_local)
@@ -33,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import broker
+from . import tracking as tracking_db
 from .memcache import Inspector, MemcacheError
 from .settings import Settings
 
@@ -40,6 +43,10 @@ PROBE_PREFIX = "REZBOX_PROBE:"
 
 
 class CheckFailed(Exception):
+    pass
+
+
+class Skipped(Exception):
     pass
 
 
@@ -60,6 +67,9 @@ class SmokeTest:
     make_env: Callable[[], dict[str, str]]
     keep: bool = False
     verbose: bool = False
+    # runs docker compose (host only); lets the tracking-stored check fall back
+    # to psql when Grafana is off
+    compose: Callable[..., Any] | None = None
     results: list[Result] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -68,7 +78,7 @@ class SmokeTest:
         self.repos = {k: self.dir / k for k in ("local", "release", "cache", "work", "logs")}
         self.queue = f"rezbox.test.{self.run_id}"
         self.api = broker.api_for(self.settings)
-        self.memcache = Inspector(f"127.0.0.1:{self.settings.memcached_port}")
+        self.memcache = Inspector(self.settings.memcached_address)
         self.messages: list[dict] = []
         self._step = 0
 
@@ -146,6 +156,10 @@ class SmokeTest:
         try:
             detail = fn() or ""
             ok = True
+        except Skipped as e:
+            self.results.append(Result(name, None, f"skipped: {e}"))
+            print(f"  SKIP  {name:<15} {e}", flush=True)
+            return False
         except CheckFailed as e:
             detail, ok = str(e), False
         except (broker.BrokerError, MemcacheError, OSError, subprocess.SubprocessError) as e:
@@ -297,6 +311,28 @@ class SmokeTest:
             keys = sorted({m["routing_key"] for m in self.messages})
             return f"{len(self.messages)} messages so far ({', '.join(keys)}), from_cache {flags}"
 
+        def tracking_stored() -> str:
+            s = self.settings
+            if not s.tracking:
+                raise Skipped("context tracking storage is off")
+            expected = sum(1 for m in self.messages if m["routing_key"].startswith("REZ.CONTEXT"))
+            run = self.run_id.replace("'", "''")
+            try:
+                stored = tracking_db.wait_for_events(s, self.run_id, expected, compose=self.compose)
+                if stored < expected:
+                    raise CheckFailed(f"{expected} context messages were published, but only "
+                                      f"{stored} reached the database within 20s "
+                                      f"(`rezbox status`, consumer log)")
+                flags = [r[0] for r in tracking_db.rows(
+                    s, "SELECT from_cache FROM rez_context_event WHERE "
+                       f"extra->>'rezbox_run' = '{run}' AND action = 'created' "
+                       "AND package_requests = ARRAY['rezbox_hello'] ORDER BY id", self.compose)]
+            except tracking_db.TrackingError as e:
+                raise Skipped(str(e)) from e
+            if flags[:2] != [False, True]:
+                raise CheckFailed(f"from_cache of the stored resolves: {flags[:2]}, expected [False, True]")
+            return f"{stored} events stored by the consumer, from_cache {flags[:2]}"
+
         def payload_cache() -> str:
             e = self.probe("env", inside=["rezbox_hello"])
             if not e["hello_module"]:
@@ -355,6 +391,7 @@ class SmokeTest:
         self.check("resolve", resolve, requires=("release",))
         self.check("resolve-cached", resolve_cached, requires=("resolve",))
         self.check("tracking", tracking, requires=("resolve-cached",))
+        self.check("tracking-stored", tracking_stored, requires=("tracking",))
         self.check("payload-cache", payload_cache, requires=("release",))
         self.check("invalidation", invalidation, requires=("resolve-cached",))
         self.check("local-cache", local_cache, requires=("release",))

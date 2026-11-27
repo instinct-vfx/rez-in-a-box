@@ -18,8 +18,20 @@ def clean_path(path: str) -> str:
                            if p and os.path.normcase(p.rstrip("\\/")) not in own)
 
 
+def ensure_box_dirs(home: Path) -> None:
+    """rez refuses to release into, or cache into, directories that do not exist.
+
+    Mirrors the defaults of config/rezconfig.py.
+    """
+    for d in (home / "repos" / "local", home / "repos" / "release",
+              home / "package_cache" / platform_tag()):
+        d.mkdir(parents=True, exist_ok=True)
+
+
 def rez_environ(root: Path, home: Path, meta: dict, s: Settings,
-                target: str = "host") -> dict[str, str]:
+                target: str | None = None) -> dict[str, str]:
+    target = target or os.environ.get("REZBOX_TARGET") or "host"
+    ensure_box_dirs(home)
     env = {k: v for k, v in os.environ.items()
            if k not in ("VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME") and not k.startswith("REZ_")}
     env["PATH"] = meta["bin_dir"] + os.pathsep + clean_path(env.get("PATH", ""))
@@ -32,8 +44,8 @@ def rez_environ(root: Path, home: Path, meta: dict, s: Settings,
         "REZBOX_ACTIVE": meta["label"],
         "REZBOX_TARGET": target,
         "REZBOX_PLATFORM": platform_tag(),
-        "REZBOX_MEMCACHED": f"127.0.0.1:{s.memcached_port}",
-        "REZBOX_AMQP_HOST": f"127.0.0.1:{s.amqp_port}",
+        "REZBOX_MEMCACHED": s.memcached_address,
+        "REZBOX_AMQP_HOST": s.amqp_address,
         "REZBOX_AMQP_USER": s.rez_user,
         "REZBOX_AMQP_PASSWORD": s.rez_password,
         "REZBOX_AMQP_EXCHANGE": s.exchange,

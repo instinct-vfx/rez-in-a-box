@@ -81,6 +81,170 @@ services:
       timeout: 5s
       retries: 10
 
+  # Context tracking (profile "tracking"): the consumer stores rez's context
+  # tracking events in PostgreSQL. github.com/instinct-vfx/rez-ctx-tracking-consumer
+  postgres:
+    profiles: [tracking]
+    image: postgres:${REZBOX_POSTGRES_TAG:-17}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rez
+      POSTGRES_USER: rez
+      POSTGRES_PASSWORD: rez
+    ports:
+      - "127.0.0.1:${REZBOX_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rez -d rez"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  consumer:
+    profiles: [tracking]
+    image: ${REZBOX_CONSUMER_IMAGE:-ghcr.io/instinct-vfx/rez-ctx-tracking-consumer:0.1.0}
+    pull_policy: missing
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # rezbox provisions the account and the queue before this starts
+      AMQP_URL: amqp://${REZBOX_CONSUMER_AMQP_USER:-rez-consumer}:${REZBOX_CONSUMER_AMQP_PASSWORD:-rez-consumer}@amqp:5672/
+      AMQP_EXCHANGE: ${REZBOX_AMQP_EXCHANGE:-rez}
+      AMQP_QUEUE: rez.context.tracking
+      AMQP_BINDING_KEYS: REZ.CONTEXT.*
+      PG_DSN: postgresql://rez:rez@postgres:5432/rez
+      LOG_FORMAT: text
+    ports:
+      - "127.0.0.1:${REZBOX_CONSUMER_PORT:-9100}:9100"
+    # must exceed the consumer's SHUTDOWN_TIMEOUT_S (8 s)
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "rez-ctx-consumer", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # Example dashboards, see docs/dashboards.md. Grafana reads the database
+  # through a read-only role, which grafana-db-init creates.
+  grafana-db-init:
+    profiles: [dashboards]
+    image: postgres:${REZBOX_POSTGRES_TAG:-17}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGDATABASE: rez
+      PGUSER: rez
+      PGPASSWORD: rez
+    volumes:
+      - ./services/grafana/reader-role.sql:/reader-role.sql:ro
+    command:
+      - psql
+      - --quiet
+      - -v
+      - ON_ERROR_STOP=1
+      - -v
+      - reader=grafana_reader
+      - -v
+      - reader_password=grafana
+      - -f
+      - /reader-role.sql
+    restart: "no"
+
+  grafana:
+    profiles: [dashboards]
+    image: grafana/grafana:${REZBOX_GRAFANA_TAG:-12.2.1}
+    depends_on:
+      grafana-db-init:
+        condition: service_completed_successfully
+    environment:
+      GRAFANA_DB_HOST: postgres:5432
+      GRAFANA_DB_NAME: rez
+      GRAFANA_DB_USER: grafana_reader
+      GRAFANA_DB_PASSWORD: grafana
+      GF_SECURITY_ADMIN_PASSWORD: ${REZBOX_GRAFANA_ADMIN_PASSWORD:-admin}
+      # anyone who can reach the port can view the dashboards; the port is
+      # bound to 127.0.0.1. rezbox itself queries through this access.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/rez-overview.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"  # no downloads at startup
+    volumes:
+      # the two provisioning folders are mounted separately: mounting the
+      # whole folder makes Grafana fail
+      - ./services/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./services/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./services/grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${REZBOX_GRAFANA_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # `rezbox seed-demo`: runs services/demo-seeder inside the consumer image,
+  # because it uses the consumer's parser and database code.
+  seed-demo:
+    profiles: [tools]
+    image: ${REZBOX_CONSUMER_IMAGE:-ghcr.io/instinct-vfx/rez-ctx-tracking-consumer:0.1.0}
+    pull_policy: missing
+    entrypoint: ["python", "/seed/seed_demo.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PG_DSN: postgresql://rez:rez@postgres:5432/rez
+    volumes:
+      - ./services/demo-seeder:/seed:ro
+
+  # Linux target: `rezbox <command> --target linux [--base-image IMAGE]`.
+  # The repo is mounted read-only; installs, Pythons and test workdirs live in
+  # a volume per base image (Linux filesystem: fast, and venv symlinks work).
+  rez-linux:
+    profiles: [rez]
+    build:
+      context: docker/rez-linux
+      args:
+        BASE_IMAGE: ${REZBOX_LINUX_BASE:-rockylinux:9}
+    image: rezbox/rez-linux:${REZBOX_LINUX_TAG:-rockylinux-9}
+    environment:
+      REZBOX_AMQP_HOSTNAME: amqp
+      REZBOX_MEMCACHED_HOSTNAME: memcached
+      REZBOX_GRAFANA_HOSTNAME: grafana
+      REZBOX_AMQP_PORT: "5672"
+      REZBOX_AMQP_UI_PORT: "15672"
+      REZBOX_MEMCACHED_PORT: "11211"
+      REZBOX_GRAFANA_PORT: "3000"
+      REZBOX_BROKER: ${REZBOX_BROKER:-rabbitmq}
+      REZBOX_TRACKING: ${REZBOX_TRACKING:-1}
+      REZBOX_DASHBOARDS: ${REZBOX_DASHBOARDS:-1}
+      REZBOX_AMQP_ADMIN_USER: ${REZBOX_AMQP_ADMIN_USER:-admin}
+      REZBOX_AMQP_ADMIN_PASSWORD: ${REZBOX_AMQP_ADMIN_PASSWORD:-admin}
+      REZBOX_AMQP_USER: ${REZBOX_AMQP_USER:-rez}
+      REZBOX_AMQP_PASSWORD: ${REZBOX_AMQP_PASSWORD:-rez}
+      REZBOX_AMQP_EXCHANGE: ${REZBOX_AMQP_EXCHANGE:-rez}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - .:/rezbox:ro
+      - rez-linux-home:/home/rezbox
+
 volumes:
   rabbitmq-data:
   lavinmq-data:
+  postgres-data:
+  # created/removed by rezbox (one per base image); external so that
+  # `down --volumes` never deletes rez installs
+  rez-linux-home:
+    name: rezbox_home-${REZBOX_LINUX_TAG:-rockylinux-9}
+    external: true

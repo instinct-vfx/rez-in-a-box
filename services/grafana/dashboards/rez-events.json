@@ -1,0 +1,474 @@
+{
+  "uid": "rez-events",
+  "title": "rez: Events",
+  "description": "Individual context events, with filters.",
+  "tags": [
+    "rez"
+  ],
+  "timezone": "utc",
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "refresh": "",
+  "links": [
+    {
+      "title": "rez dashboards",
+      "type": "dashboards",
+      "tags": [
+        "rez"
+      ],
+      "asDropdown": false,
+      "keepTime": true,
+      "includeVars": false,
+      "targetBlank": false,
+      "icon": "external link"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "type": "query",
+        "name": "user",
+        "label": "User",
+        "description": "",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "rez-postgres"
+        },
+        "query": "SELECT DISTINCT username FROM rez_context_event\nWHERE $__timeFilter(received_at) AND username IS NOT NULL\nORDER BY 1",
+        "definition": "SELECT DISTINCT username FROM rez_context_event\nWHERE $__timeFilter(received_at) AND username IS NOT NULL\nORDER BY 1",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": "'__all__'",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "type": "textbox",
+        "name": "host",
+        "label": "Host contains",
+        "description": "Part of a host name, e.g. ws012 or rn0",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      },
+      {
+        "type": "custom",
+        "name": "action",
+        "label": "Action",
+        "query": "created,sourced",
+        "multi": true,
+        "includeAll": true,
+        "allValue": "'__all__'",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": []
+      },
+      {
+        "type": "query",
+        "name": "status",
+        "label": "Status",
+        "description": "",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "rez-postgres"
+        },
+        "query": "SELECT DISTINCT status FROM rez_context_event\nWHERE $__timeFilter(received_at) AND status IS NOT NULL\nORDER BY 1",
+        "definition": "SELECT DISTINCT status FROM rez_context_event\nWHERE $__timeFilter(received_at) AND status IS NOT NULL\nORDER BY 1",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": "'__all__'",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "type": "textbox",
+        "name": "package",
+        "label": "Package",
+        "description": "A package family (maya) or an exact version (maya-2025.3)",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Events",
+      "description": "Drag across the chart to zoom into a time range.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rez-postgres"
+      },
+      "interval": "1h",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rez-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(received_at, $__interval, 0), action AS metric, count(*) AS value\nFROM rez_context_event\nWHERE $__timeFilter(received_at)\n  AND ('__all__' IN ($user) OR username IN ($user))\n  AND ('__all__' IN ($action) OR action IN ($action))\n  AND ('__all__' IN ($status) OR status IN ($status))\n  AND ('$host' = '' OR host ILIKE '%$host%')\n  AND ('$package' = ''\n       OR resolved_packages @> ARRAY['$package']\n       OR EXISTS (SELECT FROM unnest(resolved_packages) AS pkg\n                  WHERE split_part(pkg, '-', 1) = '$package'))\nGROUP BY 1, 2\nORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "locale",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 80,
+            "barAlignment": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "created"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "sourced"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 1,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 7
+      }
+    },
+    {
+      "type": "table",
+      "title": "Events (latest 1,000)",
+      "description": "Click an event id for the full context.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rez-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rez-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT received_at AS \"Time\",\n       id AS \"Event\",\n       action AS \"Action\",\n       username AS \"User\",\n       host AS \"Host\",\n       status AS \"Status\",\n       solve_time AS \"Solve time\",\n       from_cache AS \"Cached\",\n       rez_version AS \"rez\",\n       array_to_string(package_requests, ' ') AS \"Request\",\n       array_to_string(resolved_packages, ' ') AS \"Resolved\"\nFROM rez_context_event\nWHERE $__timeFilter(received_at)\n  AND ('__all__' IN ($user) OR username IN ($user))\n  AND ('__all__' IN ($action) OR action IN ($action))\n  AND ('__all__' IN ($status) OR status IN ($status))\n  AND ('$host' = '' OR host ILIKE '%$host%')\n  AND ('$package' = ''\n       OR resolved_packages @> ARRAY['$package']\n       OR EXISTS (SELECT FROM unnest(resolved_packages) AS pkg\n                  WHERE split_part(pkg, '-', 1) = '$package'))\nORDER BY received_at DESC\nLIMIT 1000"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "inspect": true,
+            "filterable": false
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Event"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show event",
+                    "url": "/d/rez-event/?var-id=${__value.raw}&${__url_time_range}"
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Action"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "created": {
+                        "color": "blue",
+                        "index": 0
+                      },
+                      "sourced": {
+                        "color": "purple",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "User"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Host"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "solved": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "failed": {
+                        "color": "red",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Solve time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 95
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cached"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 75
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "true": {
+                        "text": "yes",
+                        "index": 0
+                      },
+                      "false": {
+                        "text": "no",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rez"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 65
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Request"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 260
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 2,
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 20
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}
