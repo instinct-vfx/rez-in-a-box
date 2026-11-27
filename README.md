@@ -294,6 +294,8 @@ capped `rez.context` queue that nothing consumed; `up` removes it.
 
 ## memcache inspector
 
+![memcache inspector](docs/images/memcache-inspector.png)
+
 rez stores memcached entries under md5-hashed keys, but every value carries
 its real key: rez stores `(qualified_key, value)` tuples. The inspector uses
 this to show what each entry actually is:
