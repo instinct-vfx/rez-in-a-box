@@ -255,9 +255,8 @@ Findings:
   host a `psql` fallback in the postgres container is used when Grafana is off.
 - Grafana frames collapse columns with the same name; alias expressions.
 - Verified: RabbitMQ and LavinMQ, host and Linux target (12/12 smoke checks),
-  `--no-tracking`/`--no-dashboards`, dashboards test 8/8.
-- Not verified: pulling the image from GHCR (not published yet; the box was
-  tested with a locally built image under the pinned tag).
+  `--no-tracking`/`--no-dashboards`, dashboards test 8/8, and the image pulled
+  from GHCR (the consumer's `v0.1.0` release).
 
 ## Phase 6 (optional, not started)
 

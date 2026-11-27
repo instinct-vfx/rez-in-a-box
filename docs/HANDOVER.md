@@ -30,9 +30,11 @@ per phase) and [../README.md](../README.md) (user-facing docs, kept current).
     containers. Windows is covered by the host.
   - The AMQP release hook and the `events` command are included.
   - License: **Apache 2.0**.
-- **Git:** `main`, three commits so far (phases 1 to 3). Commit only when the
-  user asks. The commit trailer comes from the session's system reminder.
-  The user's git identity is configured.
+- **Git:** `main`, pushed to `github.com/instinct-vfx/rez-in-a-box` (public;
+  created 2026-11-27). Commits for phases 1 to 3, then one commit for phase 4,
+  the shell fix and phase 5. Commit and push only when the user asks. The
+  commit trailer comes from the session's system reminder. The user's git
+  identity is configured; `gh` works over SSH for pushes.
 
 ## 2. State right now
 
@@ -41,18 +43,13 @@ per phase) and [../README.md](../README.md) (user-facing docs, kept current).
 | 1 | compose services, broker provisioning, memcache inspector | committed `61cf7b1` |
 | 2 | rez installs (GitHub release / git / path) via uv-managed Python | committed `e03847e` |
 | 3 | rezconfig.py, sample packages, `rezbox test`, `rezbox events` | committed `c77bab9` |
-| 4 | Linux target (`--target linux`, Rocky 9 / any base image) | **done, verified, uncommitted** |
-| fix | `rezbox shell` restores box settings after the user's profile; `default_shell` follows the started shell | **done, verified, uncommitted** |
-| 5 | context tracking storage: consumer + PostgreSQL + Grafana dashboards + demo seeder, moved here from rez-ctx-tracking-consumer | **done, verified, uncommitted** (section 8) |
+| 4 | Linux target (`--target linux`, Rocky 9 / any base image) | committed `2a68d80` |
+| fix | `rezbox shell` restores box settings after the user's profile; `default_shell` follows the started shell | committed `2a68d80` |
+| 5 | context tracking storage: consumer + PostgreSQL + Grafana dashboards + demo seeder, moved here from rez-ctx-tracking-consumer | committed `2a68d80` |
 | 6 | optional: Windows container, LavinMQ hardening, CI workflow | not started |
 
-**Last open question to the user:** "Shall I commit all of it (Phase 4, the
-shell fix and Phase 5)?" There has been no answer yet. Don't commit until they
-say so. Suggested commits: Phase 4 + shell fix, then Phase 5.
-
-Uncommitted files: everything under `rezbox/`, `services/` (new `grafana/`,
-`demo-seeder/`), `docs/`, `docker/`, `tests/test_demo_seeder.py`, plus
-`README.md`, `compose.yaml`, `config/rezconfig.py`, `rezbox.py`.
+Everything is committed and pushed; the working tree was clean after that
+commit (apart from this file's update).
 
 **Also offered, not done:** adding a `REZBOX_ACTIVE` guard to the user's
 PowerShell profile (`C:\Users\insti\Documents\PowerShell\Microsoft.PowerShell_profile.ps1`).
@@ -64,9 +61,8 @@ section 7.
 - Services are running: RabbitMQ (default broker), memcached, memcache-ui,
   postgres, consumer, grafana. The database holds demo events (`DEMO.*`
   routing keys) from testing: `rezbox seed-demo --delete` removes them.
-- The consumer image is the **locally built** tag
-  `ghcr.io/instinct-vfx/rez-ctx-tracking-consumer:0.1.0` (built from the
-  sibling checkout, not pulled): it is not published yet.
+- The consumer image is pulled from GHCR (`ghcr.io/instinct-vfx/rez-ctx-tracking-consumer:0.1.0`,
+  published by the consumer's release workflow, public).
 - Host rez installs in `.rezbox/rez/windows-amd64/`: `3.5.0-py3.11` (current),
   `3.5.0-py3.13`, `3.4.0-py3.12`, `3.2.1-py3.11` (unsigned fallback),
   `git-main-562850ba-py3.11`.
@@ -270,7 +266,7 @@ docs/PLAN.md             plan, decisions, per-phase status and findings
   (`REZBOX_AMQP_HOSTNAME`, `REZBOX_MEMCACHED_HOSTNAME`). On the host they
   default to `127.0.0.1`.
 
-### Shell fix (latest change, uncommitted)
+### Shell fix (phase 4 era)
 - `cmd_shell` starts pwsh (or powershell, falling back to cmd) with
   `-NoExit -Command <_powershell_reassert>`, or bash with an rcfile built by
   `_bash_reassert`.
@@ -315,7 +311,9 @@ docs/PLAN.md             plan, decisions, per-phase status and findings
 
 **Not verified:**
 - macOS and Linux *hosts*. Only the Windows host and Linux containers were run.
-- Pulling the consumer image from GHCR: it is not published yet.
+- Pulling the consumer image from GHCR was verified after publishing: the
+  pull works and `rezbox test` passes 12/12 with it. The dashboards test was
+  run against a locally built image of the same code.
 - Interactive typing in `rezbox shell` on Windows. stdin is not forwarded
   through the uv shim when piped, so the test went through a generated
   script.
@@ -345,18 +343,13 @@ docs/PLAN.md             plan, decisions, per-phase status and findings
 
 ## 7. Open items and suggested next steps
 
-1. **Ask before committing** Phases 4 and 5 and the shell fix. Suggested
-   messages: "Phase 4: Linux target; shell restores box settings after
-   profiles" and "Phase 5: context tracking storage with the consumer,
-   Grafana dashboards, demo data". Keep `.rezbox/` out (gitignored).
-2. **Consumer image publishing** is the user's step: merge the consumer's PR
-   #1 and its cleanup, push, tag `v0.1.0` (the new `release.yml` workflow
-   publishes `ghcr.io/instinct-vfx/rez-ctx-tracking-consumer:0.1.0`), and make
-   the GHCR package public. Until then a fresh machine cannot pull it
-   (`up` explains how to build it or use `--no-tracking`).
-3. If the user agrees, add the `REZBOX_ACTIVE` guard to their PowerShell
+1. Bumping the consumer: it is pinned in `rezbox/settings.py`
+   (`DEFAULT_CONSUMER_IMAGE`) and `compose.yaml`. Tag a new consumer release
+   (its `release.yml` publishes the image), then update both and re-run
+   `rezbox test`, `rezbox test-dashboards` and `pytest tests/test_demo_seeder.py`.
+2. If the user agrees, add the `REZBOX_ACTIVE` guard to their PowerShell
    profile (wrap the `REZ_*` lines in `if (-not $env:REZBOX_ACTIVE) { ... }`).
-4. Phase 6 candidates (the user hasn't chosen yet):
+3. Phase 6 candidates (the user hasn't chosen yet):
    - **CI workflow** (recommended): GitHub Actions running `rezbox up` and
      `rezbox test` on ubuntu-latest (host, plus `--target linux` matrix) and
      windows-latest (host). Windows runners cannot run the Linux service
@@ -366,11 +359,11 @@ docs/PLAN.md             plan, decisions, per-phase status and findings
      Docker Desktop mode switch and needs Hyper-V isolation on the user's
      Insider build.
    - LavinMQ: add a healthcheck to its compose service (it has none).
-5. Smaller ideas mentioned to the user:
+4. Smaller ideas mentioned to the user:
    - a live memcached activity feed via `watch`
    - `rezbox events` currently polls the HTTP API; an AMQP consumer would be
      an option
    - a possible upstream rez issue: the PowerShell plugin could honour `norc`
      with `-NoProfile`
-6. Keep [PLAN.md](PLAN.md) (status plus findings per phase) and the README in
+5. Keep [PLAN.md](PLAN.md) (status plus findings per phase) and the README in
    sync with every change; the user reads both.
